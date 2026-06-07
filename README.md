@@ -35,6 +35,12 @@ Print the calculated dimensions before export:
 stencil-to-stl input.png output.stl --preview
 ```
 
+Preview conversion metadata without exporting an STL:
+
+```bash
+stencil-to-stl input.png output.stl --preview-only
+```
+
 ## Defaults
 
 ```yaml
@@ -62,28 +68,27 @@ pytest
 
 Current architecture:
 
-- `stencil_to_stl/app/cli.py` owns argument parsing and orchestrates the full conversion flow.
+- `stencil_to_stl/app/cli.py` owns argument parsing and CLI preview display.
+- `stencil_to_stl/app/conversion.py` owns reusable conversion orchestration and structured metadata.
 - `stencil_to_stl/app/image_loader.py` loads PNG files into RGBA arrays.
 - `stencil_to_stl/app/mask_processor.py` converts RGBA pixels into a binary print mask and supports horizontal mirroring.
-- `stencil_to_stl/app/mesh_builder.py` turns the mask into a `trimesh.Trimesh` relief block.
+- `stencil_to_stl/app/mesh_builder.py` turns the mask into a `trimesh.Trimesh` relief block using merged run rectangles.
 - `stencil_to_stl/app/stl_exporter.py` writes the mesh to an STL file.
 - Tests cover image loading, masking, mirroring, basic dimensions, and watertight mesh output.
 
 Observed gaps:
 
 - There is no UI for loading a PNG. The project is currently CLI-only.
-- CLI orchestration and conversion logic are tightly coupled. A future UI should call a shared conversion service instead of duplicating CLI behavior.
-- `horizontal_runs()` exists but the mesh builder currently loops over every pixel, which may become slow or memory-heavy for larger PNGs.
-- Preview output is text-only and does not expose structured metadata that a UI could display.
+- Preview output is still text-only in the CLI, though structured metadata is available from the conversion service.
+- Complex artwork can still produce non-watertight meshes in downstream mesh analysis and needs a dedicated manifold-surface pass.
 - The local `.venv` may become invalid when the project folder moves because script shebangs can point to an old path.
 
 Recommended architecture direction:
 
-- Add a reusable conversion module that accepts a config and returns structured results.
-- Keep the CLI as a thin wrapper around that service.
+- Keep the CLI as a thin wrapper around the shared conversion service.
 - Build the UI as another wrapper around the same service.
-- Optimize mesh generation before relying on the UI for large images.
-- Add automated tests around the shared conversion service so CLI and UI behavior stay aligned.
+- Continue optimizing mesh generation and watertightness before relying on the UI for large images.
+- Keep automated tests around the shared conversion service so CLI and UI behavior stay aligned.
 
 ## Security Considerations
 

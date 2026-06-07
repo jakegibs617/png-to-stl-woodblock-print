@@ -4,10 +4,7 @@ import argparse
 from pathlib import Path
 
 from stencil_to_stl.app.config import MAX_PIXEL_COUNT_DEFAULT, StencilConfig
-from stencil_to_stl.app.image_loader import load_png_rgba
-from stencil_to_stl.app.mask_processor import black_pixel_mask, mirror_mask_x
-from stencil_to_stl.app.mesh_builder import build_relief_mesh, physical_dimensions
-from stencil_to_stl.app.stl_exporter import export_stl
+from stencil_to_stl.app.conversion import ConversionMetadata, convert_stencil, preview_conversion
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -29,6 +26,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     parser.add_argument("--preview", action="store_true", help="Print calculated dimensions before exporting.")
     parser.add_argument(
+        "--preview-only",
+        action="store_true",
+        help="Print calculated dimensions without generating an STL.",
+    )
+    parser.add_argument(
         "--max-pixels",
         type=int,
         default=MAX_PIXEL_COUNT_DEFAULT,
@@ -38,33 +40,28 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def print_preview(metadata: ConversionMetadata) -> None:
+    print(f"Image size: {metadata.image_width_px} x {metadata.image_height_px} px")
+    print(f"Physical size: {metadata.physical_width_mm:g} mm x {metadata.physical_height_mm:g} mm")
+    print(f"Base thickness: {metadata.base_thickness_mm:g} mm")
+    print(f"Relief height: {metadata.relief_height_mm:g} mm")
+    print(f"Total height: {metadata.total_height_mm:g} mm")
+    print(f"Raised pixels: {metadata.raised_pixel_count} ({metadata.raised_pixel_percent:.1f}%)")
+    print(f"Estimated relief rectangles: {metadata.estimated_relief_rectangles}")
+    print(f"Estimated mesh faces: {metadata.estimated_mesh_faces}")
+    print(f"Mirrored: {'yes' if metadata.mirrored else 'no'}")
+    for warning in metadata.warnings:
+        print(f"Warning: {warning}")
+
+
 def generate(config: StencilConfig, *, preview: bool = False) -> None:
-    config.validate()
-    rgba = load_png_rgba(config.input_file, max_pixel_count=config.max_pixel_count)
-    mask = black_pixel_mask(rgba, config.threshold)
-    if config.mirror_x:
-        mask = mirror_mask_x(mask)
-
-    if not mask.any():
-        raise ValueError("No black print pixels were detected.")
-
-    width_mm, height_mm = physical_dimensions(mask, config.pixel_to_mm_scale)
+    result = convert_stencil(config)
     if preview:
-        print(f"Image size: {mask.shape[1]} x {mask.shape[0]} px")
-        print(f"Physical size: {width_mm:g} mm x {height_mm:g} mm")
-        print(f"Base thickness: {config.base_thickness_mm:g} mm")
-        print(f"Relief height: {config.relief_height_mm:g} mm")
-        print(f"Total height: {config.base_thickness_mm + config.relief_height_mm:g} mm")
-        print(f"Mirrored: {'yes' if config.mirror_x else 'no'}")
-        print("Warning: very thin raised lines may fail to print or break. Recommended minimum: 0.4-0.8 mm.")
+        print_preview(result.metadata)
 
-    mesh = build_relief_mesh(
-        mask,
-        base_thickness_mm=config.base_thickness_mm,
-        relief_height_mm=config.relief_height_mm,
-        pixel_to_mm_scale=config.pixel_to_mm_scale,
-    )
-    export_stl(mesh, config.output_file)
+
+def preview(config: StencilConfig) -> None:
+    print_preview(preview_conversion(config))
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -82,7 +79,10 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     try:
-        generate(config, preview=args.preview)
+        if args.preview_only:
+            preview(config)
+        else:
+            generate(config, preview=args.preview)
     except Exception as exc:
         parser.exit(1, f"error: {exc}\n")
     return 0
@@ -90,4 +90,3 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

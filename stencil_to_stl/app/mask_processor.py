@@ -32,6 +32,31 @@ def mirror_mask_x(mask: np.ndarray) -> np.ndarray:
     return np.fliplr(mask)
 
 
+def fill_diagonal_contacts(mask: np.ndarray) -> np.ndarray:
+    """Fill 2x2 diagonal-only contacts so raised regions mesh as a manifold surface."""
+    if mask.ndim != 2:
+        raise ValueError("Expected a 2D mask.")
+    if mask.shape[0] < 2 or mask.shape[1] < 2:
+        return mask.copy()
+
+    regularized = mask.copy()
+    while True:
+        top_left = regularized[:-1, :-1]
+        top_right = regularized[:-1, 1:]
+        bottom_left = regularized[1:, :-1]
+        bottom_right = regularized[1:, 1:]
+        saddle = (top_left & bottom_right & ~top_right & ~bottom_left) | (
+            top_right & bottom_left & ~top_left & ~bottom_right
+        )
+        rows, cols = np.nonzero(saddle)
+        if len(rows) == 0:
+            return regularized
+        regularized[rows, cols] = True
+        regularized[rows, cols + 1] = True
+        regularized[rows + 1, cols] = True
+        regularized[rows + 1, cols + 1] = True
+
+
 def horizontal_runs(mask: np.ndarray) -> list[Run]:
     """Group continuous black pixels in each row into run rectangles."""
     if mask.ndim != 2:
@@ -49,4 +74,3 @@ def horizontal_runs(mask: np.ndarray) -> list[Run]:
         if start_x is not None:
             runs.append(Run(row=row_index, start_x=start_x, end_x=len(row) - 1))
     return runs
-
