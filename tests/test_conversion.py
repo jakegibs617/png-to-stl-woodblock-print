@@ -66,6 +66,23 @@ def test_preview_conversion_omits_thin_line_warning_for_wide_runs(tmp_path: Path
     assert metadata.warnings == ()
 
 
+def test_preview_conversion_uses_target_physical_size(tmp_path: Path) -> None:
+    png = _make_png(tmp_path)
+    config = StencilConfig(
+        input_file=png,
+        output_file=tmp_path / "out.stl",
+        target_width_mm=127.0,
+        target_height_mm=177.8,
+        mirror_x=False,
+    )
+
+    metadata = preview_conversion(config)
+
+    assert metadata.physical_width_mm == 127.0
+    assert metadata.physical_height_mm == 177.8
+    assert metadata.warnings == ()
+
+
 def test_convert_stencil_can_return_mesh_without_exporting(tmp_path: Path) -> None:
     png = _make_png(tmp_path)
     config = StencilConfig(input_file=png, output_file=tmp_path / "out.stl")

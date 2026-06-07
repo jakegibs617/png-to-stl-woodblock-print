@@ -56,10 +56,18 @@ def _warnings_for_mask(mask: np.ndarray, config: StencilConfig) -> tuple[str, ..
     runs = horizontal_runs(mask)
     if not runs:
         return ()
-    min_width_mm = min(run.width_px for run in runs) * config.pixel_to_mm_scale
+    x_scale, _ = _pixel_scales_for_mask(mask, config)
+    min_width_mm = min(run.width_px for run in runs) * x_scale
     if min_width_mm < 0.8:
         return ("Very thin raised lines may fail to print or break. Recommended minimum: 0.4-0.8 mm.",)
     return ()
+
+
+def _pixel_scales_for_mask(mask: np.ndarray, config: StencilConfig) -> tuple[float, float]:
+    height_px, width_px = mask.shape
+    x_scale = config.target_width_mm / width_px if config.target_width_mm is not None else config.pixel_to_mm_scale
+    y_scale = config.target_height_mm / height_px if config.target_height_mm is not None else config.pixel_to_mm_scale
+    return x_scale, y_scale
 
 
 def _metadata_for_mask(
@@ -67,7 +75,8 @@ def _metadata_for_mask(
     config: StencilConfig,
     relief_rectangles: list[Rectangle],
 ) -> ConversionMetadata:
-    width_mm, height_mm = physical_dimensions(mask, config.pixel_to_mm_scale)
+    pixel_scales = _pixel_scales_for_mask(mask, config)
+    width_mm, height_mm = physical_dimensions(mask, pixel_scales)
     raised_pixel_count = int(mask.sum())
     total_pixels = int(mask.size)
     relief_rectangle_count = len(relief_rectangles)
@@ -107,7 +116,7 @@ def convert_stencil(config: StencilConfig, *, export: bool = True) -> Conversion
         mask,
         base_thickness_mm=config.base_thickness_mm,
         relief_height_mm=config.relief_height_mm,
-        pixel_to_mm_scale=config.pixel_to_mm_scale,
+        pixel_to_mm_scale=_pixel_scales_for_mask(mask, config),
         relief_rectangles=relief_rectangles,
     )
     if export:
