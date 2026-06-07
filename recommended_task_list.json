@@ -1,0 +1,210 @@
+{
+  "project": "stencil-to-stl-woodcut-generator",
+  "version": 1,
+  "updated": "2026-06-07",
+  "status_values": [
+    "pending",
+    "in_progress",
+    "blocked",
+    "done"
+  ],
+  "tasks": [
+    {
+      "id": "ENV-001",
+      "title": "Recreate local Python environment",
+      "priority": "high",
+      "status": "pending",
+      "session_size": "small",
+      "depends_on": [],
+      "description": "Recreate .venv in the current workspace path and install the project with test dependencies.",
+      "acceptance_criteria": [
+        "python -m pip install -e '.[test]' completes",
+        "pytest is runnable from the recreated environment",
+        "README install instructions remain accurate"
+      ]
+    },
+    {
+      "id": "TEST-001",
+      "title": "Run and stabilize test suite",
+      "priority": "high",
+      "status": "pending",
+      "session_size": "small",
+      "depends_on": [
+        "ENV-001"
+      ],
+      "description": "Run the existing tests and resolve any failures that are not caused by local environment drift.",
+      "acceptance_criteria": [
+        "All existing tests pass",
+        "Any failing assertions are fixed or documented",
+        "No unrelated behavior is changed"
+      ]
+    },
+    {
+      "id": "ARCH-001",
+      "title": "Extract shared conversion service",
+      "priority": "high",
+      "status": "pending",
+      "session_size": "medium",
+      "depends_on": [
+        "TEST-001"
+      ],
+      "description": "Move conversion orchestration out of the CLI into a reusable service that can support both CLI and UI flows.",
+      "acceptance_criteria": [
+        "CLI calls the shared service",
+        "Service returns structured metadata",
+        "Service tests cover valid conversion, empty mask, invalid config, and mirroring"
+      ]
+    },
+    {
+      "id": "META-001",
+      "title": "Add structured preview metadata",
+      "priority": "high",
+      "status": "pending",
+      "session_size": "medium",
+      "depends_on": [
+        "ARCH-001"
+      ],
+      "description": "Expose image dimensions, physical dimensions, raised pixel count, total height, estimated complexity, and printmaking warnings.",
+      "acceptance_criteria": [
+        "CLI preview uses structured metadata",
+        "Metadata is available without exporting STL when requested",
+        "Tests verify metadata values"
+      ]
+    },
+    {
+      "id": "SAFE-001",
+      "title": "Add input safety limits",
+      "priority": "high",
+      "status": "pending",
+      "session_size": "small",
+      "depends_on": [
+        "ARCH-001"
+      ],
+      "description": "Prevent oversized images and unbounded mesh generation from exhausting CPU or memory.",
+      "acceptance_criteria": [
+        "Config supports maximum pixel count or dimensions",
+        "Oversized images fail with a clear error",
+        "Tests cover safety limit behavior"
+      ]
+    },
+    {
+      "id": "MESH-001",
+      "title": "Optimize mesh generation",
+      "priority": "high",
+      "status": "pending",
+      "session_size": "large",
+      "depends_on": [
+        "TEST-001"
+      ],
+      "description": "Use horizontal runs or rectangle merging to reduce geometry for large masks.",
+      "acceptance_criteria": [
+        "Generated mesh remains watertight",
+        "Large solid masks produce substantially fewer faces than per-pixel geometry",
+        "Existing mesh tests pass",
+        "New tests cover sparse and dense masks"
+      ]
+    },
+    {
+      "id": "UI-001",
+      "title": "Build basic PNG upload UI",
+      "priority": "high",
+      "status": "pending",
+      "session_size": "large",
+      "depends_on": [
+        "ARCH-001",
+        "META-001",
+        "SAFE-001"
+      ],
+      "description": "Create a UI for uploading a PNG, adjusting conversion parameters, previewing metadata, and downloading an STL.",
+      "acceptance_criteria": [
+        "User can load a PNG from the UI",
+        "User can adjust threshold, scale, base thickness, relief height, and mirroring",
+        "UI displays preview metadata before export",
+        "User can download a generated STL",
+        "UI does not expose arbitrary filesystem paths"
+      ]
+    },
+    {
+      "id": "UI-002",
+      "title": "Add mask preview UI",
+      "priority": "medium",
+      "status": "pending",
+      "session_size": "medium",
+      "depends_on": [
+        "UI-001"
+      ],
+      "description": "Show the processed black/transparent mask so users can tune threshold and mirroring before export.",
+      "acceptance_criteria": [
+        "Mask preview updates when threshold changes",
+        "Mirroring is reflected in the preview",
+        "Preview handles transparent backgrounds clearly"
+      ]
+    },
+    {
+      "id": "UI-003",
+      "title": "Add 3D preview",
+      "priority": "medium",
+      "status": "pending",
+      "session_size": "large",
+      "depends_on": [
+        "UI-001",
+        "MESH-001"
+      ],
+      "description": "Render a browser-based preview of the generated relief mesh before download.",
+      "acceptance_criteria": [
+        "Preview renders nonblank geometry",
+        "User can rotate or inspect the model",
+        "Large inputs degrade gracefully or show a complexity warning"
+      ]
+    },
+    {
+      "id": "PRINT-001",
+      "title": "Add printmaking reliability analysis",
+      "priority": "medium",
+      "status": "pending",
+      "session_size": "medium",
+      "depends_on": [
+        "META-001"
+      ],
+      "description": "Detect thin raised features and warn when they may be fragile or hard to print.",
+      "acceptance_criteria": [
+        "Analysis estimates minimum raised feature width",
+        "Warnings use millimeter units",
+        "Tests cover obvious thin-line cases"
+      ]
+    },
+    {
+      "id": "PRESET-001",
+      "title": "Add physical size presets",
+      "priority": "low",
+      "status": "pending",
+      "session_size": "medium",
+      "depends_on": [
+        "UI-001"
+      ],
+      "description": "Provide presets and automatic scale calculation for common print sizes.",
+      "acceptance_criteria": [
+        "User can choose common target sizes",
+        "Scale is calculated from desired width or height",
+        "Custom scale remains available"
+      ]
+    },
+    {
+      "id": "BATCH-001",
+      "title": "Add batch conversion",
+      "priority": "low",
+      "status": "pending",
+      "session_size": "large",
+      "depends_on": [
+        "ARCH-001",
+        "MESH-001"
+      ],
+      "description": "Support converting multiple PNG files with shared settings.",
+      "acceptance_criteria": [
+        "Batch CLI or UI flow accepts multiple PNGs",
+        "Each output file has a predictable name",
+        "Failures are reported per input file"
+      ]
+    }
+  ]
+}

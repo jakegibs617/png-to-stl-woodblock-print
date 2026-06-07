@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "stencil-to-stl"
+version = "0.1.0"
+description = "Generate STL relief blocks from black-and-transparent PNG stencil images."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.24",
+    "Pillow>=10.0",
+    "trimesh>=4.0",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=8.0",
+]
+
+[project.scripts]
+stencil-to-stl = "stencil_to_stl.app.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["stencil_to_stl*"]
+
