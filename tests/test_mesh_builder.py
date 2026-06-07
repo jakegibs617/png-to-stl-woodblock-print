@@ -28,6 +28,25 @@ def test_physical_dimensions_uses_width_then_height() -> None:
     assert physical_dimensions(mask, 0.1) == (1.0, 2.0)
 
 
+def test_physical_dimensions_accepts_separate_x_y_scales() -> None:
+    mask = np.zeros((20, 10), dtype=bool)
+
+    assert physical_dimensions(mask, (12.7, 8.89)) == (127.0, 177.8)
+
+
+def test_build_relief_mesh_accepts_separate_x_y_scales() -> None:
+    mask = np.ones((2, 2), dtype=bool)
+
+    mesh = build_relief_mesh(
+        mask,
+        base_thickness_mm=2.0,
+        relief_height_mm=1.5,
+        pixel_to_mm_scale=(63.5, 88.9),
+    )
+
+    assert mesh.bounds[1].tolist() == [127.0, 177.8, 3.5]
+
+
 def test_large_solid_mask_uses_row_runs_not_pixel_cubes() -> None:
     mask = np.ones((1000, 1000), dtype=bool)
     mesh = build_relief_mesh(

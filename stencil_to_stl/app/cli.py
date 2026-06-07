@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from stencil_to_stl.app.config import MAX_PIXEL_COUNT_DEFAULT, StencilConfig
+from stencil_to_stl.app.config import MAX_PIXEL_COUNT_DEFAULT, MM_PER_INCH, StencilConfig
 from stencil_to_stl.app.conversion import ConversionMetadata, convert_stencil, preview_conversion
 
 
@@ -17,6 +17,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--base-thickness", type=float, default=2.0, help="Base thickness in millimeters.")
     parser.add_argument("--relief-height", type=float, default=1.5, help="Raised relief height above the base.")
     parser.add_argument("--scale", type=float, default=0.1, help="Millimeters per source pixel.")
+    parser.add_argument("--width-in", type=float, help="Target physical width in inches.")
+    parser.add_argument("--height-in", type=float, help="Target physical height in inches.")
     parser.add_argument("--threshold", type=int, default=128, help="Black pixel RGB threshold from 0 to 255.")
 
     mirror_group = parser.add_mutually_exclusive_group()
@@ -73,6 +75,8 @@ def main(argv: list[str] | None = None) -> int:
         base_thickness_mm=args.base_thickness,
         relief_height_mm=args.relief_height,
         pixel_to_mm_scale=args.scale,
+        target_width_mm=args.width_in * MM_PER_INCH if args.width_in is not None else None,
+        target_height_mm=args.height_in * MM_PER_INCH if args.height_in is not None else None,
         threshold=args.threshold,
         mirror_x=args.mirror_x,
         max_pixel_count=args.max_pixels,

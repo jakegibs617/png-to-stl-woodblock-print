@@ -5,6 +5,7 @@ from pathlib import Path
 
 
 MAX_PIXEL_COUNT_DEFAULT = 500_000  # ~707×707 px; limits mesh to ~2M triangles worst-case
+MM_PER_INCH = 25.4
 
 
 @dataclass(frozen=True)
@@ -14,6 +15,8 @@ class StencilConfig:
     base_thickness_mm: float = 2.0
     relief_height_mm: float = 1.5
     pixel_to_mm_scale: float = 0.1
+    target_width_mm: float | None = None
+    target_height_mm: float | None = None
     threshold: int = 128
     mirror_x: bool = True
     max_pixel_count: int = MAX_PIXEL_COUNT_DEFAULT
@@ -27,6 +30,10 @@ class StencilConfig:
             raise ValueError("Relief height must be greater than 0.")
         if self.pixel_to_mm_scale <= 0:
             raise ValueError("Scale must be greater than 0.")
+        if self.target_width_mm is not None and self.target_width_mm <= 0:
+            raise ValueError("Target width must be greater than 0.")
+        if self.target_height_mm is not None and self.target_height_mm <= 0:
+            raise ValueError("Target height must be greater than 0.")
         if not 0 <= self.threshold <= 255:
             raise ValueError("Threshold must be between 0 and 255.")
         if self.max_pixel_count < 1:

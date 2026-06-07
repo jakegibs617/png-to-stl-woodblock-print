@@ -29,6 +29,12 @@ Disable mirroring:
 stencil-to-stl input.png output.stl --no-mirror
 ```
 
+Generate at a specific physical size, such as a 5 x 7 inch block:
+
+```bash
+stencil-to-stl input.png output.stl --width-in 5 --height-in 7
+```
+
 Print the calculated dimensions before export:
 
 ```bash

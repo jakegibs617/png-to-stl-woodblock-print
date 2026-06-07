@@ -6,6 +6,7 @@ import trimesh
 from stencil_to_stl.app.mask_processor import Run, horizontal_runs
 
 Rectangle = tuple[int, int, int, int]
+PixelScale = float | tuple[float, float]
 
 
 def merged_run_rectangles(mask: np.ndarray) -> list[Rectangle]:
@@ -67,7 +68,7 @@ def build_relief_mesh(
     *,
     base_thickness_mm: float,
     relief_height_mm: float,
-    pixel_to_mm_scale: float,
+    pixel_to_mm_scale: PixelScale,
     relief_rectangles: list[Rectangle] | None = None,
 ) -> trimesh.Trimesh:
     """Build a base plate plus raised relief from a binary mask."""
@@ -77,7 +78,8 @@ def build_relief_mesh(
         raise ValueError("Base thickness must be greater than 0.")
     if relief_height_mm <= 0:
         raise ValueError("Relief height must be greater than 0.")
-    if pixel_to_mm_scale <= 0:
+    x_scale, y_scale = _normalize_pixel_scale(pixel_to_mm_scale)
+    if x_scale <= 0 or y_scale <= 0:
         raise ValueError("Scale must be greater than 0.")
 
     height_px, width_px = mask.shape
@@ -118,10 +120,10 @@ def build_relief_mesh(
         quad(base_a, upper_a, upper_b, base_b)
 
     def cell_bounds(row: int, col: int) -> tuple[float, float, float, float]:
-        x0 = col * pixel_to_mm_scale
-        x1 = x0 + pixel_to_mm_scale
-        y0 = (height_px - row - 1) * pixel_to_mm_scale
-        y1 = y0 + pixel_to_mm_scale
+        x0 = col * x_scale
+        x1 = x0 + x_scale
+        y0 = (height_px - row - 1) * y_scale
+        y1 = y0 + y_scale
         return x0, x1, y0, y1
 
     def cell_top(row: int, col: int) -> float:
@@ -160,8 +162,17 @@ def build_relief_mesh(
     return mesh
 
 
-def physical_dimensions(mask: np.ndarray, pixel_to_mm_scale: float) -> tuple[float, float]:
+def _normalize_pixel_scale(pixel_to_mm_scale: PixelScale) -> tuple[float, float]:
+    if isinstance(pixel_to_mm_scale, tuple):
+        return pixel_to_mm_scale
+    return pixel_to_mm_scale, pixel_to_mm_scale
+
+
+def physical_dimensions(mask: np.ndarray, pixel_to_mm_scale: PixelScale) -> tuple[float, float]:
     if mask.ndim != 2:
         raise ValueError("Expected a 2D mask.")
     height_px, width_px = mask.shape
-    return width_px * pixel_to_mm_scale, height_px * pixel_to_mm_scale
+    x_scale, y_scale = _normalize_pixel_scale(pixel_to_mm_scale)
+    if x_scale <= 0 or y_scale <= 0:
+        raise ValueError("Scale must be greater than 0.")
+    return width_px * x_scale, height_px * y_scale
