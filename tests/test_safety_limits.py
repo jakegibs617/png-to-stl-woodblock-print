@@ -1,10 +1,12 @@
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 from PIL import Image
 
 from stencil_to_stl.app.cli import generate
 from stencil_to_stl.app.config import MAX_PIXEL_COUNT_DEFAULT, StencilConfig
+from stencil_to_stl.app.image_loader import load_png_rgba
 
 
 def _make_png(tmp_path: Path, width: int, height: int) -> Path:
@@ -56,8 +58,23 @@ def test_generate_accepts_image_at_pixel_limit(tmp_path: Path) -> None:
     assert (tmp_path / "out.stl").exists()
 
 
-def test_default_max_pixel_count_is_four_million() -> None:
-    assert MAX_PIXEL_COUNT_DEFAULT == 4_000_000
+def test_default_max_pixel_count_is_five_hundred_thousand() -> None:
+    assert MAX_PIXEL_COUNT_DEFAULT == 500_000
+
+
+def test_pixel_check_fires_before_rgba_conversion(tmp_path: Path) -> None:
+    png = _make_png(tmp_path, width=5, height=5)
+    with patch("stencil_to_stl.app.image_loader.Image") as mock_pil:
+        mock_image = mock_pil.open.return_value.__enter__.return_value
+        mock_image.format = "PNG"
+        mock_image.width = 5
+        mock_image.height = 5
+        mock_image.convert.return_value = None
+
+        with pytest.raises(ValueError, match="exceeds the limit"):
+            load_png_rgba(png, max_pixel_count=24)
+
+        mock_image.convert.assert_not_called()
 
 
 def test_config_default_max_pixel_count() -> None:

@@ -40,14 +40,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def generate(config: StencilConfig, *, preview: bool = False) -> None:
     config.validate()
-    rgba = load_png_rgba(config.input_file)
-    pixel_count = rgba.shape[0] * rgba.shape[1]
-    if pixel_count > config.max_pixel_count:
-        raise ValueError(
-            f"Image has {pixel_count:,} pixels ({rgba.shape[1]}×{rgba.shape[0]}), "
-            f"which exceeds the limit of {config.max_pixel_count:,}. "
-            f"Use --max-pixels to raise the limit or reduce the image dimensions."
-        )
+    rgba = load_png_rgba(config.input_file, max_pixel_count=config.max_pixel_count)
     mask = black_pixel_mask(rgba, config.threshold)
     if config.mirror_x:
         mask = mirror_mask_x(mask)

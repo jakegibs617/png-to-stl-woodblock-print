@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
-MAX_PIXEL_COUNT_DEFAULT = 4_000_000  # 2000×2000 px
+MAX_PIXEL_COUNT_DEFAULT = 500_000  # ~707×707 px; limits mesh to ~2M triangles worst-case
 
 
 @dataclass(frozen=True)
