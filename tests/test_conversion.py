@@ -38,8 +38,32 @@ def test_preview_conversion_returns_structured_metadata_without_export(tmp_path:
     assert metadata.raised_pixel_count == 4
     assert metadata.raised_pixel_percent == 100 * (4 / 12)
     assert metadata.estimated_relief_rectangles == 1
-    assert metadata.estimated_mesh_faces == 24
+    assert metadata.estimated_mesh_faces == 22
     assert metadata.mirrored is False
+    assert metadata.warnings == ()
+
+
+def test_preview_conversion_does_not_require_stl_output_path(tmp_path: Path) -> None:
+    png = _make_png(tmp_path)
+    config = StencilConfig(input_file=png, output_file=tmp_path / "preview.txt")
+
+    metadata = preview_conversion(config)
+
+    assert metadata.image_width_px == 4
+
+
+def test_preview_conversion_omits_thin_line_warning_for_wide_runs(tmp_path: Path) -> None:
+    path = tmp_path / "wide.png"
+    image = Image.new("RGBA", (10, 2), color=(255, 255, 255, 0))
+    for x in range(10):
+        for y in range(2):
+            image.putpixel((x, y), (0, 0, 0, 255))
+    image.save(path)
+    config = StencilConfig(input_file=path, output_file=tmp_path / "out.stl", pixel_to_mm_scale=0.1)
+
+    metadata = preview_conversion(config)
+
+    assert metadata.warnings == ()
 
 
 def test_convert_stencil_can_return_mesh_without_exporting(tmp_path: Path) -> None:

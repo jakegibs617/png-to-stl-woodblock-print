@@ -18,11 +18,9 @@ class StencilConfig:
     mirror_x: bool = True
     max_pixel_count: int = MAX_PIXEL_COUNT_DEFAULT
 
-    def validate(self) -> None:
+    def validate_input(self) -> None:
         if self.input_file.suffix.lower() != ".png":
             raise ValueError("Input file must be a PNG.")
-        if self.output_file.suffix.lower() != ".stl":
-            raise ValueError("Output file must use the .stl extension.")
         if self.base_thickness_mm <= 0:
             raise ValueError("Base thickness must be greater than 0.")
         if self.relief_height_mm <= 0:
@@ -34,3 +32,7 @@ class StencilConfig:
         if self.max_pixel_count < 1:
             raise ValueError("max_pixel_count must be at least 1.")
 
+    def validate(self) -> None:
+        self.validate_input()
+        if self.output_file.suffix.lower() != ".stl":
+            raise ValueError("Output file must use the .stl extension.")

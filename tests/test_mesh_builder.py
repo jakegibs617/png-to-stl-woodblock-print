@@ -1,7 +1,7 @@
 import numpy as np
 
 from stencil_to_stl.app.mask_processor import horizontal_runs
-from stencil_to_stl.app.mesh_builder import build_relief_mesh, merged_run_rectangles, physical_dimensions
+from stencil_to_stl.app.mesh_builder import build_relief_mesh, estimate_mesh_faces, merged_run_rectangles, physical_dimensions
 
 
 def test_build_relief_mesh_has_base_and_consistent_total_height() -> None:
@@ -38,7 +38,26 @@ def test_large_solid_mask_uses_row_runs_not_pixel_cubes() -> None:
 
     assert len(horizontal_runs(mask)) == 1000
     assert len(merged_run_rectangles(mask)) == 1
-    assert len(mesh.faces) == 24
+    assert mesh.is_watertight
+
+
+def test_relief_touching_plate_boundary_is_watertight() -> None:
+    mask = np.zeros((4, 4), dtype=bool)
+    mask[0, :] = True
+
+    mesh = build_relief_mesh(
+        mask,
+        base_thickness_mm=2.0,
+        relief_height_mm=1.5,
+        pixel_to_mm_scale=0.1,
+    )
+
+    assert mesh.is_watertight
+
+
+def test_estimate_mesh_faces_uses_rectangle_count() -> None:
+    assert estimate_mesh_faces(0) == 12
+    assert estimate_mesh_faces(3) == 42
 
 
 def test_sparse_mask_merges_only_matching_adjacent_runs() -> None:

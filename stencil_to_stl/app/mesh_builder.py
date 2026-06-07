@@ -5,8 +5,10 @@ import trimesh
 
 from stencil_to_stl.app.mask_processor import Run, horizontal_runs
 
+Rectangle = tuple[int, int, int, int]
 
-def merged_run_rectangles(mask: np.ndarray) -> list[tuple[int, int, int, int]]:
+
+def merged_run_rectangles(mask: np.ndarray) -> list[Rectangle]:
     """Merge identical horizontal runs across adjacent rows.
 
     Returns rectangles as (start_row, end_row, start_x, end_x), inclusive.
@@ -14,7 +16,7 @@ def merged_run_rectangles(mask: np.ndarray) -> list[tuple[int, int, int, int]]:
     if mask.ndim != 2:
         raise ValueError("Expected a 2D mask.")
 
-    rectangles: list[tuple[int, int, int, int]] = []
+    rectangles: list[Rectangle] = []
     active: dict[tuple[int, int], Run] = {}
 
     for row in range(mask.shape[0]):
@@ -39,14 +41,13 @@ def merged_run_rectangles(mask: np.ndarray) -> list[tuple[int, int, int, int]]:
     for run in active.values():
         rectangles.append((run.row, mask.shape[0] - 1, run.start_x, run.end_x))
 
-    return sorted(rectangles, key=lambda rectangle: (rectangle[0], rectangle[2], rectangle[1], rectangle[3]))
+    return sorted(rectangles, key=lambda r: (r[0], r[2], r[1], r[3]))
 
 
-def estimate_mesh_faces(mask: np.ndarray) -> int:
-    if mask.ndim != 2:
-        raise ValueError("Expected a 2D mask.")
-
-    return 12 + (len(merged_run_rectangles(mask)) * 12)
+def estimate_mesh_faces(n_rectangles: int) -> int:
+    if n_rectangles < 0:
+        raise ValueError("Rectangle count must not be negative.")
+    return 12 + (n_rectangles * 10)
 
 
 def build_relief_mesh(
@@ -55,8 +56,9 @@ def build_relief_mesh(
     base_thickness_mm: float,
     relief_height_mm: float,
     pixel_to_mm_scale: float,
+    relief_rectangles: list[Rectangle] | None = None,
 ) -> trimesh.Trimesh:
-    """Build a base plate plus raised rectangle prisms from a binary mask."""
+    """Build a base plate plus raised relief from a binary mask."""
     if mask.ndim != 2:
         raise ValueError("Expected a 2D mask.")
     if base_thickness_mm <= 0:
@@ -67,8 +69,6 @@ def build_relief_mesh(
         raise ValueError("Scale must be greater than 0.")
 
     height_px, width_px = mask.shape
-    width_mm = width_px * pixel_to_mm_scale
-    height_mm = height_px * pixel_to_mm_scale
     raised_z = base_thickness_mm + relief_height_mm
 
     vertices: list[tuple[float, float, float]] = []
@@ -90,22 +90,58 @@ def build_relief_mesh(
         faces.append((vertex(a), vertex(b), vertex(c)))
         faces.append((vertex(a), vertex(c), vertex(d)))
 
-    def box(x0: float, x1: float, y0: float, y1: float, z0: float, z1: float) -> None:
-        quad((x0, y0, z1), (x1, y0, z1), (x1, y1, z1), (x0, y1, z1))
-        quad((x0, y1, z0), (x1, y1, z0), (x1, y0, z0), (x0, y0, z0))
-        quad((x0, y0, z0), (x0, y0, z1), (x0, y1, z1), (x0, y1, z0))
-        quad((x1, y1, z0), (x1, y1, z1), (x1, y0, z1), (x1, y0, z0))
-        quad((x0, y1, z0), (x0, y1, z1), (x1, y1, z1), (x1, y1, z0))
-        quad((x1, y0, z0), (x1, y0, z1), (x0, y0, z1), (x0, y0, z0))
+    def perimeter_quad(
+        lower_a: tuple[float, float, float],
+        upper_a: tuple[float, float, float],
+        upper_b: tuple[float, float, float],
+        lower_b: tuple[float, float, float],
+        top_z: float,
+    ) -> None:
+        if top_z == base_thickness_mm:
+            quad(lower_a, upper_a, upper_b, lower_b)
+            return
+        base_a = (upper_a[0], upper_a[1], base_thickness_mm)
+        base_b = (upper_b[0], upper_b[1], base_thickness_mm)
+        quad(lower_a, base_a, base_b, lower_b)
+        quad(base_a, upper_a, upper_b, base_b)
 
-    box(0.0, width_mm, 0.0, height_mm, 0.0, base_thickness_mm)
+    def cell_bounds(row: int, col: int) -> tuple[float, float, float, float]:
+        x0 = col * pixel_to_mm_scale
+        x1 = x0 + pixel_to_mm_scale
+        y0 = (height_px - row - 1) * pixel_to_mm_scale
+        y1 = y0 + pixel_to_mm_scale
+        return x0, x1, y0, y1
 
-    for start_row, end_row, start_x, end_x in merged_run_rectangles(mask):
-        x0 = start_x * pixel_to_mm_scale
-        x1 = (end_x + 1) * pixel_to_mm_scale
-        y0 = (height_px - end_row - 1) * pixel_to_mm_scale
-        y1 = (height_px - start_row) * pixel_to_mm_scale
-        box(x0, x1, y0, y1, base_thickness_mm, raised_z)
+    def cell_top(row: int, col: int) -> float:
+        return raised_z if mask[row, col] else base_thickness_mm
+
+    for row in range(height_px):
+        for col in range(width_px):
+            x0, x1, y0, y1 = cell_bounds(row, col)
+            top_z = cell_top(row, col)
+
+            quad((x0, y0, top_z), (x1, y0, top_z), (x1, y1, top_z), (x0, y1, top_z))
+            quad((x0, y1, 0.0), (x1, y1, 0.0), (x1, y0, 0.0), (x0, y0, 0.0))
+
+            if col == 0:
+                perimeter_quad((x0, y0, 0.0), (x0, y0, top_z), (x0, y1, top_z), (x0, y1, 0.0), top_z)
+            if col == width_px - 1:
+                perimeter_quad((x1, y1, 0.0), (x1, y1, top_z), (x1, y0, top_z), (x1, y0, 0.0), top_z)
+            if row == 0:
+                perimeter_quad((x0, y1, 0.0), (x0, y1, top_z), (x1, y1, top_z), (x1, y1, 0.0), top_z)
+            if row == height_px - 1:
+                perimeter_quad((x1, y0, 0.0), (x1, y0, top_z), (x0, y0, top_z), (x0, y0, 0.0), top_z)
+
+            if col < width_px - 1:
+                neighbor_z = cell_top(row, col + 1)
+                if top_z != neighbor_z:
+                    low_z, high_z = sorted((top_z, neighbor_z))
+                    quad((x1, y0, low_z), (x1, y0, high_z), (x1, y1, high_z), (x1, y1, low_z))
+            if row < height_px - 1:
+                neighbor_z = cell_top(row + 1, col)
+                if top_z != neighbor_z:
+                    low_z, high_z = sorted((top_z, neighbor_z))
+                    quad((x1, y0, low_z), (x1, y0, high_z), (x0, y0, high_z), (x0, y0, low_z))
 
     mesh = trimesh.Trimesh(vertices=np.array(vertices), faces=np.array(faces), process=True)
     return mesh
