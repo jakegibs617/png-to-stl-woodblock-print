@@ -1,7 +1,7 @@
 import numpy as np
 
 from stencil_to_stl.app.mask_processor import horizontal_runs
-from stencil_to_stl.app.mesh_builder import build_relief_mesh, physical_dimensions
+from stencil_to_stl.app.mesh_builder import build_relief_mesh, merged_run_rectangles, physical_dimensions
 
 
 def test_build_relief_mesh_has_base_and_consistent_total_height() -> None:
@@ -29,6 +29,30 @@ def test_physical_dimensions_uses_width_then_height() -> None:
 
 def test_large_solid_mask_uses_row_runs_not_pixel_cubes() -> None:
     mask = np.ones((1000, 1000), dtype=bool)
+    mesh = build_relief_mesh(
+        mask,
+        base_thickness_mm=2.0,
+        relief_height_mm=1.5,
+        pixel_to_mm_scale=0.1,
+    )
 
     assert len(horizontal_runs(mask)) == 1000
+    assert len(merged_run_rectangles(mask)) == 1
+    assert len(mesh.faces) == 24
 
+
+def test_sparse_mask_merges_only_matching_adjacent_runs() -> None:
+    mask = np.array(
+        [
+            [True, True, False, True],
+            [True, True, False, False],
+            [False, True, True, False],
+        ],
+        dtype=bool,
+    )
+
+    assert merged_run_rectangles(mask) == [
+        (0, 1, 0, 1),
+        (0, 0, 3, 3),
+        (2, 2, 1, 2),
+    ]

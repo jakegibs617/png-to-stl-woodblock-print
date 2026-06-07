@@ -1,0 +1,98 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+import numpy as np
+import trimesh
+
+from stencil_to_stl.app.config import StencilConfig
+from stencil_to_stl.app.image_loader import load_png_rgba
+from stencil_to_stl.app.mask_processor import black_pixel_mask, mirror_mask_x
+from stencil_to_stl.app.mesh_builder import (
+    build_relief_mesh,
+    estimate_mesh_faces,
+    merged_run_rectangles,
+    physical_dimensions,
+)
+from stencil_to_stl.app.stl_exporter import export_stl
+
+
+@dataclass(frozen=True)
+class ConversionMetadata:
+    image_width_px: int
+    image_height_px: int
+    physical_width_mm: float
+    physical_height_mm: float
+    base_thickness_mm: float
+    relief_height_mm: float
+    total_height_mm: float
+    raised_pixel_count: int
+    raised_pixel_percent: float
+    estimated_relief_rectangles: int
+    estimated_mesh_faces: int
+    mirrored: bool
+    warnings: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class ConversionResult:
+    metadata: ConversionMetadata
+    mesh: trimesh.Trimesh | None = None
+
+
+def _load_mask(config: StencilConfig) -> np.ndarray:
+    rgba = load_png_rgba(config.input_file, max_pixel_count=config.max_pixel_count)
+    mask = black_pixel_mask(rgba, config.threshold)
+    if config.mirror_x:
+        mask = mirror_mask_x(mask)
+    if not mask.any():
+        raise ValueError("No black print pixels were detected.")
+    return mask
+
+
+def _metadata_for_mask(mask: np.ndarray, config: StencilConfig) -> ConversionMetadata:
+    width_mm, height_mm = physical_dimensions(mask, config.pixel_to_mm_scale)
+    raised_pixel_count = int(mask.sum())
+    total_pixels = int(mask.size)
+    relief_rectangles = len(merged_run_rectangles(mask))
+    estimated_faces = estimate_mesh_faces(mask)
+    warnings = (
+        "Very thin raised lines may fail to print or break. Recommended minimum: 0.4-0.8 mm.",
+    )
+
+    return ConversionMetadata(
+        image_width_px=int(mask.shape[1]),
+        image_height_px=int(mask.shape[0]),
+        physical_width_mm=width_mm,
+        physical_height_mm=height_mm,
+        base_thickness_mm=config.base_thickness_mm,
+        relief_height_mm=config.relief_height_mm,
+        total_height_mm=config.base_thickness_mm + config.relief_height_mm,
+        raised_pixel_count=raised_pixel_count,
+        raised_pixel_percent=(raised_pixel_count / total_pixels) * 100,
+        estimated_relief_rectangles=relief_rectangles,
+        estimated_mesh_faces=estimated_faces,
+        mirrored=config.mirror_x,
+        warnings=warnings,
+    )
+
+
+def preview_conversion(config: StencilConfig) -> ConversionMetadata:
+    config.validate()
+    mask = _load_mask(config)
+    return _metadata_for_mask(mask, config)
+
+
+def convert_stencil(config: StencilConfig, *, export: bool = True) -> ConversionResult:
+    config.validate()
+    mask = _load_mask(config)
+    metadata = _metadata_for_mask(mask, config)
+    mesh = build_relief_mesh(
+        mask,
+        base_thickness_mm=config.base_thickness_mm,
+        relief_height_mm=config.relief_height_mm,
+        pixel_to_mm_scale=config.pixel_to_mm_scale,
+    )
+    if export:
+        export_stl(mesh, config.output_file)
+    return ConversionResult(metadata=metadata, mesh=mesh)
