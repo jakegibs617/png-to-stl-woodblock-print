@@ -58,4 +58,77 @@ Run tests:
 pytest
 ```
 
-# png-to-stl-woodblock-print
+## Architecture Review
+
+Current architecture:
+
+- `stencil_to_stl/app/cli.py` owns argument parsing and orchestrates the full conversion flow.
+- `stencil_to_stl/app/image_loader.py` loads PNG files into RGBA arrays.
+- `stencil_to_stl/app/mask_processor.py` converts RGBA pixels into a binary print mask and supports horizontal mirroring.
+- `stencil_to_stl/app/mesh_builder.py` turns the mask into a `trimesh.Trimesh` relief block.
+- `stencil_to_stl/app/stl_exporter.py` writes the mesh to an STL file.
+- Tests cover image loading, masking, mirroring, basic dimensions, and watertight mesh output.
+
+Observed gaps:
+
+- There is no UI for loading a PNG. The project is currently CLI-only.
+- CLI orchestration and conversion logic are tightly coupled. A future UI should call a shared conversion service instead of duplicating CLI behavior.
+- `horizontal_runs()` exists but the mesh builder currently loops over every pixel, which may become slow or memory-heavy for larger PNGs.
+- Preview output is text-only and does not expose structured metadata that a UI could display.
+- The local `.venv` may become invalid when the project folder moves because script shebangs can point to an old path.
+
+Recommended architecture direction:
+
+- Add a reusable conversion module that accepts a config and returns structured results.
+- Keep the CLI as a thin wrapper around that service.
+- Build the UI as another wrapper around the same service.
+- Optimize mesh generation before relying on the UI for large images.
+- Add automated tests around the shared conversion service so CLI and UI behavior stay aligned.
+
+## Security Considerations
+
+Primary risks:
+
+- User-provided PNG files can be malformed, extremely large, or intentionally expensive to process.
+- Very large masks can produce excessive mesh geometry and exhaust memory or CPU.
+- Output paths from CLI arguments should remain explicit and should not silently overwrite unrelated files without user intent.
+- A future web UI must avoid exposing arbitrary filesystem reads or writes.
+- If the app becomes hosted, uploaded images and generated STL files should be treated as sensitive user data.
+
+Recommended mitigations:
+
+- Enforce maximum image dimensions or maximum pixel count before mesh generation.
+- Add clear validation for file type, image mode, alpha channel behavior, and empty masks.
+- Add geometry complexity estimates before export.
+- Use temporary files for uploaded UI inputs and generated downloads.
+- Keep UI output scoped to generated STL downloads rather than arbitrary server paths.
+- Avoid shelling out with user-provided paths or arguments.
+- Add dependency scanning once the project is prepared for release.
+
+## High Priority Next Steps
+
+1. Recreate the Python virtual environment and verify `pip install -e ".[test]"`.
+2. Run the full test suite and fix any environment-independent failures.
+3. Extract shared conversion logic from `cli.py` into a service module.
+4. Add structured conversion metadata: image size, physical size, raised pixel count, estimated mesh size, total height, and warnings.
+5. Add input limits for image dimensions and pixel count.
+6. Optimize mesh generation using row runs or rectangle merging.
+7. Add a basic UI for PNG upload, parameter controls, preview metadata, and STL download.
+8. Add integration tests for CLI and conversion service behavior.
+
+## Nice To Have Features
+
+- Mask preview before export.
+- Side-by-side original and processed preview.
+- 3D mesh preview in the UI.
+- Presets for common print sizes such as 4x6, 5x7, and postcard dimensions.
+- Automatic scale calculation from desired physical width or height.
+- Minimum feature width analysis for printmaking reliability.
+- Optional cleanup tools such as despeckle, threshold preview, dilation, erosion, and smoothing.
+- Export metadata alongside STL, such as settings and source image dimensions.
+- Batch conversion for multiple PNG files.
+- Cross-platform packaging as a small desktop app.
+
+## Multi-Session Task List
+
+A recommended machine-readable task list lives in `recommended_task_list.json`. It is designed to survive multiple work sessions with stable task IDs, priorities, dependencies, and completion fields.
