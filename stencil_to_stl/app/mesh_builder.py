@@ -44,10 +44,22 @@ def merged_run_rectangles(mask: np.ndarray) -> list[Rectangle]:
     return sorted(rectangles, key=lambda r: (r[0], r[2], r[1], r[3]))
 
 
-def estimate_mesh_faces(n_rectangles: int) -> int:
-    if n_rectangles < 0:
-        raise ValueError("Rectangle count must not be negative.")
-    return 12 + (n_rectangles * 10)
+def estimate_mesh_faces(mask: np.ndarray) -> int:
+    if mask.ndim != 2:
+        raise ValueError("Expected a 2D mask.")
+    height_px, width_px = mask.shape
+    perimeter_edges = (height_px * 2) + (width_px * 2)
+    raised_perimeter_edges = (
+        int(mask[:, 0].sum())
+        + int(mask[:, width_px - 1].sum())
+        + int(mask[0, :].sum())
+        + int(mask[height_px - 1, :].sum())
+    )
+    horizontal_transitions = int((mask[:, :-1] != mask[:, 1:]).sum()) if width_px > 1 else 0
+    vertical_transitions = int((mask[:-1, :] != mask[1:, :]).sum()) if height_px > 1 else 0
+    return (mask.size * 4) + (perimeter_edges * 2) + (raised_perimeter_edges * 2) + (
+        (horizontal_transitions + vertical_transitions) * 2
+    )
 
 
 def build_relief_mesh(
@@ -144,6 +156,7 @@ def build_relief_mesh(
                     quad((x1, y0, low_z), (x1, y0, high_z), (x0, y0, high_z), (x0, y0, low_z))
 
     mesh = trimesh.Trimesh(vertices=np.array(vertices), faces=np.array(faces), process=True)
+    trimesh.repair.fix_normals(mesh)
     return mesh
 
 

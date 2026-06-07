@@ -38,7 +38,7 @@ def test_preview_conversion_returns_structured_metadata_without_export(tmp_path:
     assert metadata.raised_pixel_count == 4
     assert metadata.raised_pixel_percent == 100 * (4 / 12)
     assert metadata.estimated_relief_rectangles == 1
-    assert metadata.estimated_mesh_faces == 22
+    assert metadata.estimated_mesh_faces == 92
     assert metadata.mirrored is False
     assert metadata.warnings == ()
 

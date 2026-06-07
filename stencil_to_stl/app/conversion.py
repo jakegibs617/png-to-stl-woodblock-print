@@ -7,7 +7,7 @@ import trimesh
 
 from stencil_to_stl.app.config import StencilConfig
 from stencil_to_stl.app.image_loader import load_png_rgba
-from stencil_to_stl.app.mask_processor import black_pixel_mask, horizontal_runs, mirror_mask_x
+from stencil_to_stl.app.mask_processor import black_pixel_mask, fill_diagonal_contacts, horizontal_runs, mirror_mask_x
 from stencil_to_stl.app.mesh_builder import (
     Rectangle,
     build_relief_mesh,
@@ -46,6 +46,7 @@ def _load_mask(config: StencilConfig) -> np.ndarray:
     mask = black_pixel_mask(rgba, config.threshold)
     if config.mirror_x:
         mask = mirror_mask_x(mask)
+    mask = fill_diagonal_contacts(mask)
     if not mask.any():
         raise ValueError("No black print pixels were detected.")
     return mask
@@ -70,7 +71,7 @@ def _metadata_for_mask(
     raised_pixel_count = int(mask.sum())
     total_pixels = int(mask.size)
     relief_rectangle_count = len(relief_rectangles)
-    estimated_faces = estimate_mesh_faces(relief_rectangle_count)
+    estimated_faces = estimate_mesh_faces(mask)
     warnings = _warnings_for_mask(mask, config)
 
     return ConversionMetadata(

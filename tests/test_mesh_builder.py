@@ -16,6 +16,7 @@ def test_build_relief_mesh_has_base_and_consistent_total_height() -> None:
     )
 
     assert mesh.is_watertight
+    assert mesh.is_winding_consistent
     assert mesh.bounds[0].tolist() == [0.0, 0.0, 0.0]
     assert mesh.bounds[1].tolist() == [1.0, 1.0, 3.5]
     assert len(horizontal_runs(mask)) == 2
@@ -55,9 +56,16 @@ def test_relief_touching_plate_boundary_is_watertight() -> None:
     assert mesh.is_watertight
 
 
-def test_estimate_mesh_faces_uses_rectangle_count() -> None:
-    assert estimate_mesh_faces(0) == 12
-    assert estimate_mesh_faces(3) == 42
+def test_estimate_mesh_faces_matches_height_field_builder() -> None:
+    mask = np.array(
+        [
+            [True, False],
+            [False, False],
+        ],
+        dtype=bool,
+    )
+
+    assert estimate_mesh_faces(mask) == 40
 
 
 def test_sparse_mask_merges_only_matching_adjacent_runs() -> None:

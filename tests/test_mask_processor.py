@@ -1,6 +1,6 @@
 import numpy as np
 
-from stencil_to_stl.app.mask_processor import black_pixel_mask, horizontal_runs, mirror_mask_x
+from stencil_to_stl.app.mask_processor import black_pixel_mask, fill_diagonal_contacts, horizontal_runs, mirror_mask_x
 
 
 def test_black_pixel_mask_requires_alpha_and_black_threshold() -> None:
@@ -44,3 +44,17 @@ def test_horizontal_runs_groups_contiguous_pixels_by_row() -> None:
         (1, 0, 1),
     ]
 
+
+def test_fill_diagonal_contacts_closes_checkerboard_pinches() -> None:
+    mask = np.array(
+        [
+            [True, False],
+            [False, True],
+        ],
+        dtype=bool,
+    )
+
+    assert fill_diagonal_contacts(mask).tolist() == [
+        [True, True],
+        [True, True],
+    ]
