@@ -4,6 +4,8 @@ import json
 import math
 import re
 import tempfile
+import threading
+import time
 import uuid
 import warnings
 from dataclasses import asdict
@@ -31,6 +33,8 @@ WORK_DIR = Path(tempfile.mkdtemp(prefix="stencil-to-stl-web-"))
 UPLOAD_DIR = WORK_DIR / "uploads"
 OUTPUT_DIR = WORK_DIR / "outputs"
 DOWNLOADS: dict[str, Path] = {}
+JOBS: dict[str, "ConversionJob"] = {}
+JOBS_LOCK = threading.Lock()
 
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -304,6 +308,35 @@ HTML = """<!doctype html>
       background: #fffaf0;
     }
 
+    .progress-wrap {
+      display: grid;
+      gap: 8px;
+    }
+
+    .progress-track {
+      height: 10px;
+      background: #e7ebe7;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      overflow: hidden;
+    }
+
+    .progress-fill {
+      width: 0%;
+      height: 100%;
+      background: var(--accent);
+      transition: width 180ms ease;
+    }
+
+    .progress-meta {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      color: var(--muted);
+      font-size: 13px;
+      font-variant-numeric: tabular-nums;
+    }
+
     dl {
       margin: 0;
       display: grid;
@@ -409,6 +442,13 @@ HTML = """<!doctype html>
         <header><h2>Output</h2></header>
         <div class="result-body">
           <div id="status" class="status">Ready</div>
+          <div id="progressWrap" class="progress-wrap hidden">
+            <div class="progress-track"><div id="progressFill" class="progress-fill"></div></div>
+            <div class="progress-meta">
+              <span id="progressStage">Waiting</span>
+              <span id="progressElapsed">0.0s</span>
+            </div>
+          </div>
           <a id="downloadLink" class="download hidden" href="#">Download STL</a>
           <dl id="metadata" class="hidden"></dl>
           <div id="warnings" class="warnings"></div>
@@ -426,6 +466,10 @@ HTML = """<!doctype html>
     const fileSize = document.getElementById('fileSize');
     const form = document.getElementById('convertForm');
     const statusBox = document.getElementById('status');
+    const progressWrap = document.getElementById('progressWrap');
+    const progressFill = document.getElementById('progressFill');
+    const progressStage = document.getElementById('progressStage');
+    const progressElapsed = document.getElementById('progressElapsed');
     const metadata = document.getElementById('metadata');
     const warnings = document.getElementById('warnings');
     const downloadLink = document.getElementById('downloadLink');
@@ -451,6 +495,20 @@ HTML = """<!doctype html>
       statusBox.className = `status ${mode}`.trim();
     }
 
+    function setProgress(progress, stage, elapsedSeconds) {
+      progressWrap.classList.remove('hidden');
+      progressFill.style.width = `${Math.max(0, Math.min(100, progress))}%`;
+      progressStage.textContent = stage;
+      progressElapsed.textContent = `${elapsedSeconds.toFixed(1)}s`;
+    }
+
+    function hideProgress() {
+      progressWrap.classList.add('hidden');
+      progressFill.style.width = '0%';
+      progressStage.textContent = 'Waiting';
+      progressElapsed.textContent = '0.0s';
+    }
+
     function setFile(file) {
       selectedFile = file;
       downloadLink.classList.add('hidden');
@@ -464,6 +522,7 @@ HTML = """<!doctype html>
         previewImage.style.display = 'none';
         previewImage.removeAttribute('src');
         dropZone.classList.remove('has-image');
+        hideProgress();
         setStatus('Ready');
         return;
       }
@@ -474,6 +533,7 @@ HTML = """<!doctype html>
       emptyState.style.display = 'none';
       dropZone.classList.add('has-image');
       setStatus('Ready');
+      hideProgress();
     }
 
     function renderMetadata(data, processing) {
@@ -514,17 +574,36 @@ HTML = """<!doctype html>
 
       generateButton.disabled = true;
       downloadLink.classList.add('hidden');
-      setStatus('Generating STL', 'busy');
+      setStatus('Starting conversion', 'busy');
+      setProgress(1, 'Uploading', 0);
 
       try {
-        const response = await fetch('/api/convert', { method: 'POST', body });
-        const data = await response.json();
-        if (!response.ok) throw new Error(data.error || 'Conversion failed');
-        renderMetadata(data.metadata, data.processing);
-        downloadLink.href = data.download_url;
-        downloadLink.download = data.filename;
-        downloadLink.classList.remove('hidden');
-        setStatus('STL ready');
+        const response = await fetch('/api/jobs', { method: 'POST', body });
+        const started = await response.json();
+        if (!response.ok) throw new Error(started.error || 'Conversion failed');
+
+        while (true) {
+          await new Promise(resolve => setTimeout(resolve, 500));
+          const statusResponse = await fetch(`/api/status?id=${encodeURIComponent(started.job_id)}`);
+          const data = await statusResponse.json();
+          if (!statusResponse.ok) throw new Error(data.error || 'Status check failed');
+          setProgress(data.progress, data.stage, data.elapsed_seconds);
+          setStatus(data.status === 'running' ? 'Generating STL' : data.stage, data.status === 'error' ? 'error' : 'busy');
+
+          if (data.status === 'done') {
+            renderMetadata(data.metadata, data.processing);
+            downloadLink.href = data.download_url;
+            downloadLink.download = data.filename;
+            downloadLink.classList.remove('hidden');
+            setStatus('STL ready');
+            setProgress(100, 'Done', data.elapsed_seconds);
+            break;
+          }
+
+          if (data.status === 'error') {
+            throw new Error(data.error || 'Conversion failed');
+          }
+        }
       } catch (error) {
         setStatus(error.message, 'error');
       } finally {
@@ -561,6 +640,33 @@ class MeshInput:
     target_height_mm: float | None
     original_pixel_count: int
     mesh_pixel_count: int
+
+
+@dataclass
+class ConversionJob:
+    id: str
+    status: str
+    stage: str
+    progress: int
+    started_at: float
+    finished_at: float | None = None
+    result: dict[str, object] | None = None
+    error: str | None = None
+
+    def to_json(self) -> dict[str, object]:
+        end_time = self.finished_at or time.monotonic()
+        payload: dict[str, object] = {
+            "job_id": self.id,
+            "status": self.status,
+            "stage": self.stage,
+            "progress": self.progress,
+            "elapsed_seconds": round(end_time - self.started_at, 1),
+        }
+        if self.result is not None:
+            payload.update(self.result)
+        if self.error is not None:
+            payload["error"] = self.error
+        return payload
 
 
 def _field_value(form: cgi.FieldStorage, name: str, default: str = "") -> str:
@@ -662,6 +768,140 @@ def _metadata_json(metadata: ConversionMetadata) -> dict[str, object]:
     return asdict(metadata)
 
 
+@dataclass(frozen=True)
+class PreparedConversion:
+    config: StencilConfig
+    mesh_input: MeshInput
+    output_file: Path
+    upload_id: str
+
+
+def _prepare_conversion(form: cgi.FieldStorage) -> PreparedConversion:
+    image_field = form["image"] if "image" in form else None
+    if image_field is None or isinstance(image_field, list) or not image_field.filename:
+        raise ValueError("PNG upload is required.")
+
+    upload_id = uuid.uuid4().hex
+    stem = _safe_stem(image_field.filename)
+    input_file = UPLOAD_DIR / f"{upload_id}-{stem}.png"
+    output_file = OUTPUT_DIR / f"{upload_id}-{stem}.stl"
+    with input_file.open("wb") as handle:
+        handle.write(image_field.file.read())
+
+    requested_max_pixels = _int_field(form, "max_pixels", MAX_PIXEL_COUNT_DEFAULT)
+    fallback_scale = _float_field(form, "scale", 0.1) or 0.1
+    width_in = _float_field(form, "width_in")
+    height_in = _float_field(form, "height_in")
+    target_width_mm = width_in * MM_PER_INCH if width_in is not None else None
+    target_height_mm = height_in * MM_PER_INCH if height_in is not None else None
+    mesh_input = _prepare_mesh_input(
+        input_file,
+        upload_id,
+        stem,
+        fallback_scale,
+        target_width_mm,
+        target_height_mm,
+    )
+    max_pixel_count = _effective_max_pixels(mesh_input.mesh_pixel_count, requested_max_pixels)
+
+    config = StencilConfig(
+        input_file=mesh_input.path,
+        output_file=output_file,
+        base_thickness_mm=_float_field(form, "base_thickness", 2.0) or 2.0,
+        relief_height_mm=_float_field(form, "relief_height", 1.5) or 1.5,
+        pixel_to_mm_scale=fallback_scale,
+        target_width_mm=mesh_input.target_width_mm,
+        target_height_mm=mesh_input.target_height_mm,
+        threshold=_int_field(form, "threshold", 128),
+        mirror_x=_field_value(form, "mirror", "true") == "true",
+        max_pixel_count=max_pixel_count,
+    )
+    return PreparedConversion(config=config, mesh_input=mesh_input, output_file=output_file, upload_id=upload_id)
+
+
+def _conversion_response(prepared: PreparedConversion) -> dict[str, object]:
+    result = convert_stencil(prepared.config)
+    download_id = uuid.uuid4().hex
+    DOWNLOADS[download_id] = prepared.output_file
+    return {
+        "metadata": _metadata_json(result.metadata),
+        "download_url": f"/download?id={download_id}",
+        "filename": prepared.output_file.name.removeprefix(f"{prepared.upload_id}-"),
+        "processing": {
+            "original_pixel_count": prepared.mesh_input.original_pixel_count,
+            "mesh_pixel_count": prepared.mesh_input.mesh_pixel_count,
+            "optimized": prepared.mesh_input.mesh_pixel_count < prepared.mesh_input.original_pixel_count,
+        },
+    }
+
+
+def _set_job(job_id: str, *, status: str | None = None, stage: str | None = None, progress: int | None = None) -> None:
+    with JOBS_LOCK:
+        job = JOBS[job_id]
+        if status is not None:
+            job.status = status
+        if stage is not None:
+            job.stage = stage
+        if progress is not None:
+            job.progress = progress
+
+
+def _run_conversion_job(job_id: str, prepared: PreparedConversion) -> None:
+    try:
+        _set_job(job_id, stage="Optimizing image", progress=20)
+        if prepared.mesh_input.mesh_pixel_count < prepared.mesh_input.original_pixel_count:
+            _set_job(job_id, stage="Image optimized for mesh", progress=30)
+        _set_job(job_id, stage="Building and exporting STL", progress=45)
+        response = _conversion_response(prepared)
+        with JOBS_LOCK:
+            job = JOBS[job_id]
+            job.status = "done"
+            job.stage = "Done"
+            job.progress = 100
+            job.finished_at = time.monotonic()
+            job.result = response
+    except Exception as exc:
+        with JOBS_LOCK:
+            job = JOBS[job_id]
+            job.status = "error"
+            job.stage = "Failed"
+            job.progress = 100
+            job.finished_at = time.monotonic()
+            job.error = str(exc)
+
+
+def _new_job(prepared: PreparedConversion) -> ConversionJob:
+    job_id = uuid.uuid4().hex
+    job = ConversionJob(
+        id=job_id,
+        status="running",
+        stage="Queued",
+        progress=5,
+        started_at=time.monotonic(),
+    )
+    with JOBS_LOCK:
+        JOBS[job_id] = job
+    thread = threading.Thread(target=_run_conversion_job, args=(job_id, prepared), daemon=True)
+    thread.start()
+    return job
+
+
+def _parse_multipart_form(handler: BaseHTTPRequestHandler) -> cgi.FieldStorage:
+    content_type = handler.headers.get("Content-Type", "")
+    if not content_type.startswith("multipart/form-data"):
+        raise ValueError("Expected multipart form data.")
+
+    return cgi.FieldStorage(
+        fp=handler.rfile,
+        headers=handler.headers,
+        environ={
+            "REQUEST_METHOD": "POST",
+            "CONTENT_TYPE": content_type,
+            "CONTENT_LENGTH": handler.headers.get("Content-Length", "0"),
+        },
+    )
+
+
 class StencilWebHandler(BaseHTTPRequestHandler):
     server_version = "StencilToSTLWeb/0.1"
 
@@ -673,86 +913,39 @@ class StencilWebHandler(BaseHTTPRequestHandler):
         if parsed.path == "/download":
             self._send_download(parse_qs(parsed.query).get("id", [""])[0])
             return
+        if parsed.path == "/api/status":
+            self._send_job_status(parse_qs(parsed.query).get("id", [""])[0])
+            return
         self.send_error(HTTPStatus.NOT_FOUND)
 
     def do_POST(self) -> None:
-        if urlparse(self.path).path != "/api/convert":
+        path = urlparse(self.path).path
+        if path not in {"/api/convert", "/api/jobs"}:
             self.send_error(HTTPStatus.NOT_FOUND)
             return
         try:
-            self._handle_convert()
+            if path == "/api/jobs":
+                self._handle_job()
+            else:
+                self._handle_convert()
         except Exception as exc:
             self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
 
     def _handle_convert(self) -> None:
-        content_type = self.headers.get("Content-Type", "")
-        if not content_type.startswith("multipart/form-data"):
-            raise ValueError("Expected multipart form data.")
+        self._send_json(_conversion_response(_prepare_conversion(_parse_multipart_form(self))))
 
-        form = cgi.FieldStorage(
-            fp=self.rfile,
-            headers=self.headers,
-            environ={
-                "REQUEST_METHOD": "POST",
-                "CONTENT_TYPE": content_type,
-                "CONTENT_LENGTH": self.headers.get("Content-Length", "0"),
-            },
-        )
-        image_field = form["image"] if "image" in form else None
-        if image_field is None or isinstance(image_field, list) or not image_field.filename:
-            raise ValueError("PNG upload is required.")
+    def _handle_job(self) -> None:
+        job = _new_job(_prepare_conversion(_parse_multipart_form(self)))
+        self._send_json(job.to_json())
 
-        upload_id = uuid.uuid4().hex
-        stem = _safe_stem(image_field.filename)
-        input_file = UPLOAD_DIR / f"{upload_id}-{stem}.png"
-        output_file = OUTPUT_DIR / f"{upload_id}-{stem}.stl"
-        with input_file.open("wb") as handle:
-            handle.write(image_field.file.read())
-
-        requested_max_pixels = _int_field(form, "max_pixels", MAX_PIXEL_COUNT_DEFAULT)
-        fallback_scale = _float_field(form, "scale", 0.1) or 0.1
-        width_in = _float_field(form, "width_in")
-        height_in = _float_field(form, "height_in")
-        target_width_mm = width_in * MM_PER_INCH if width_in is not None else None
-        target_height_mm = height_in * MM_PER_INCH if height_in is not None else None
-        mesh_input = _prepare_mesh_input(
-            input_file,
-            upload_id,
-            stem,
-            fallback_scale,
-            target_width_mm,
-            target_height_mm,
-        )
-        max_pixel_count = _effective_max_pixels(mesh_input.mesh_pixel_count, requested_max_pixels)
-
-        config = StencilConfig(
-            input_file=mesh_input.path,
-            output_file=output_file,
-            base_thickness_mm=_float_field(form, "base_thickness", 2.0) or 2.0,
-            relief_height_mm=_float_field(form, "relief_height", 1.5) or 1.5,
-            pixel_to_mm_scale=fallback_scale,
-            target_width_mm=mesh_input.target_width_mm,
-            target_height_mm=mesh_input.target_height_mm,
-            threshold=_int_field(form, "threshold", 128),
-            mirror_x=_field_value(form, "mirror", "true") == "true",
-            max_pixel_count=max_pixel_count,
-        )
-
-        result = convert_stencil(config)
-        download_id = uuid.uuid4().hex
-        DOWNLOADS[download_id] = output_file
-        self._send_json(
-            {
-                "metadata": _metadata_json(result.metadata),
-                "download_url": f"/download?id={download_id}",
-                "filename": output_file.name.removeprefix(f"{upload_id}-"),
-                "processing": {
-                    "original_pixel_count": mesh_input.original_pixel_count,
-                    "mesh_pixel_count": mesh_input.mesh_pixel_count,
-                    "optimized": mesh_input.mesh_pixel_count < mesh_input.original_pixel_count,
-                },
-            }
-        )
+    def _send_job_status(self, job_id: str) -> None:
+        with JOBS_LOCK:
+            job = JOBS.get(job_id)
+            if job is None:
+                self._send_json({"error": "Job not found."}, status=HTTPStatus.NOT_FOUND)
+                return
+            payload = job.to_json()
+        self._send_json(payload)
 
     def _send_download(self, download_id: str) -> None:
         path = DOWNLOADS.get(download_id)

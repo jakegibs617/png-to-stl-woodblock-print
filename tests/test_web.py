@@ -2,6 +2,7 @@ import pytest
 from PIL import Image
 
 from stencil_to_stl.app.web import (
+    ConversionJob,
     WEB_AUTO_PIXEL_LIMIT,
     WEB_TARGET_MESH_PIXELS,
     _effective_max_pixels,
@@ -57,3 +58,22 @@ def test_prepare_mesh_input_downsamples_and_preserves_physical_size(tmp_path) ->
     assert prepared.mesh_pixel_count < prepared.original_pixel_count
     assert prepared.target_width_mm == pytest.approx((1024 / 200) * 25.4, abs=0.01)
     assert prepared.target_height_mm == pytest.approx((1536 / 200) * 25.4, abs=0.01)
+
+
+def test_conversion_job_json_includes_progress_and_elapsed() -> None:
+    job = ConversionJob(
+        id="job-1",
+        status="running",
+        stage="Building STL",
+        progress=45,
+        started_at=100.0,
+    )
+    job.finished_at = 112.25
+
+    assert job.to_json() == {
+        "job_id": "job-1",
+        "status": "running",
+        "stage": "Building STL",
+        "progress": 45,
+        "elapsed_seconds": 12.2,
+    }
