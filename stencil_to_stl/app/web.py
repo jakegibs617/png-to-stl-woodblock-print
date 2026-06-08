@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 import tempfile
 import uuid
 import warnings
 from dataclasses import asdict
+from dataclasses import dataclass
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -24,6 +26,7 @@ from stencil_to_stl.app.conversion import ConversionMetadata, convert_stencil
 HOST = "127.0.0.1"
 PORT = 8765
 WEB_AUTO_PIXEL_LIMIT = 2_000_000
+WEB_TARGET_MESH_PIXELS = 100_000
 WORK_DIR = Path(tempfile.mkdtemp(prefix="stencil-to-stl-web-"))
 UPLOAD_DIR = WORK_DIR / "uploads"
 OUTPUT_DIR = WORK_DIR / "outputs"
@@ -473,7 +476,7 @@ HTML = """<!doctype html>
       setStatus('Ready');
     }
 
-    function renderMetadata(data) {
+    function renderMetadata(data, processing) {
       const rows = [
         ['Image', `${data.image_width_px} x ${data.image_height_px} px`],
         ['Physical', `${data.physical_width_mm.toFixed(3)} x ${data.physical_height_mm.toFixed(3)} mm`],
@@ -483,6 +486,9 @@ HTML = """<!doctype html>
         ['Faces', `${data.estimated_mesh_faces}`],
         ['Mirrored', data.mirrored ? 'yes' : 'no']
       ];
+      if (processing && processing.optimized) {
+        rows.splice(1, 0, ['Source pixels', `${processing.original_pixel_count}`]);
+      }
       metadata.innerHTML = rows.map(([key, value]) => `<dt>${key}</dt><dd>${value}</dd>`).join('');
       metadata.classList.remove('hidden');
       warnings.innerHTML = (data.warnings || []).map(warning => `<div>${warning}</div>`).join('');
@@ -514,7 +520,7 @@ HTML = """<!doctype html>
         const response = await fetch('/api/convert', { method: 'POST', body });
         const data = await response.json();
         if (!response.ok) throw new Error(data.error || 'Conversion failed');
-        renderMetadata(data.metadata);
+        renderMetadata(data.metadata, data.processing);
         downloadLink.href = data.download_url;
         downloadLink.download = data.filename;
         downloadLink.classList.remove('hidden');
@@ -537,6 +543,26 @@ def _safe_stem(filename: str) -> str:
     return stem or "stencil"
 
 
+@dataclass(frozen=True)
+class WebImageInfo:
+    width_px: int
+    height_px: int
+    dpi: tuple[float, float] | None
+
+    @property
+    def pixel_count(self) -> int:
+        return self.width_px * self.height_px
+
+
+@dataclass(frozen=True)
+class MeshInput:
+    path: Path
+    target_width_mm: float | None
+    target_height_mm: float | None
+    original_pixel_count: int
+    mesh_pixel_count: int
+
+
 def _field_value(form: cgi.FieldStorage, name: str, default: str = "") -> str:
     field = form[name] if name in form else None
     if field is None or isinstance(field, list):
@@ -557,11 +583,20 @@ def _int_field(form: cgi.FieldStorage, name: str, default: int) -> int:
     return int(value) if value else default
 
 
-def _png_pixel_count(path: Path) -> int:
+def _png_info(path: Path) -> WebImageInfo:
     with Image.open(path) as image:
         if image.format != "PNG":
             raise ValueError("Input file must be a PNG.")
-        return image.width * image.height
+        dpi = image.info.get("dpi")
+        if dpi is not None and (dpi[0] <= 0 or dpi[1] <= 0):
+            dpi = None
+        return WebImageInfo(width_px=image.width, height_px=image.height, dpi=dpi)
+
+
+def _physical_size_mm(info: WebImageInfo, fallback_scale_mm: float) -> tuple[float, float]:
+    if info.dpi is not None:
+        return (info.width_px / info.dpi[0]) * MM_PER_INCH, (info.height_px / info.dpi[1]) * MM_PER_INCH
+    return info.width_px * fallback_scale_mm, info.height_px * fallback_scale_mm
 
 
 def _effective_max_pixels(pixel_count: int, requested_max_pixels: int) -> int:
@@ -572,6 +607,54 @@ def _effective_max_pixels(pixel_count: int, requested_max_pixels: int) -> int:
     raise ValueError(
         f"Image has {pixel_count:,} pixels, which exceeds the automatic local limit of "
         f"{WEB_AUTO_PIXEL_LIMIT:,}. Enter a larger max-pixels value to generate it anyway."
+    )
+
+
+def _resized_dimensions(width_px: int, height_px: int, target_pixels: int) -> tuple[int, int]:
+    if width_px * height_px <= target_pixels:
+        return width_px, height_px
+    scale = math.sqrt(target_pixels / (width_px * height_px))
+    return max(1, round(width_px * scale)), max(1, round(height_px * scale))
+
+
+def _prepare_mesh_input(
+    input_file: Path,
+    upload_id: str,
+    stem: str,
+    fallback_scale_mm: float,
+    target_width_mm: float | None,
+    target_height_mm: float | None,
+) -> MeshInput:
+    info = _png_info(input_file)
+    original_width_mm, original_height_mm = _physical_size_mm(info, fallback_scale_mm)
+    physical_width_mm = target_width_mm or original_width_mm
+    physical_height_mm = target_height_mm or original_height_mm
+    resized_width, resized_height = _resized_dimensions(info.width_px, info.height_px, WEB_TARGET_MESH_PIXELS)
+
+    if (resized_width, resized_height) == (info.width_px, info.height_px):
+        return MeshInput(
+            path=input_file,
+            target_width_mm=target_width_mm,
+            target_height_mm=target_height_mm,
+            original_pixel_count=info.pixel_count,
+            mesh_pixel_count=info.pixel_count,
+        )
+
+    optimized_file = UPLOAD_DIR / f"{upload_id}-{stem}-mesh.png"
+    with Image.open(input_file) as image:
+        resized = image.convert("RGBA").resize((resized_width, resized_height), Image.Resampling.LANCZOS)
+        dpi = (
+            resized_width / (physical_width_mm / MM_PER_INCH),
+            resized_height / (physical_height_mm / MM_PER_INCH),
+        )
+        resized.save(optimized_file, format="PNG", dpi=dpi)
+
+    return MeshInput(
+        path=optimized_file,
+        target_width_mm=physical_width_mm,
+        target_height_mm=physical_height_mm,
+        original_pixel_count=info.pixel_count,
+        mesh_pixel_count=resized_width * resized_height,
     )
 
 
@@ -627,20 +710,29 @@ class StencilWebHandler(BaseHTTPRequestHandler):
             handle.write(image_field.file.read())
 
         requested_max_pixels = _int_field(form, "max_pixels", MAX_PIXEL_COUNT_DEFAULT)
-        max_pixel_count = _effective_max_pixels(_png_pixel_count(input_file), requested_max_pixels)
+        fallback_scale = _float_field(form, "scale", 0.1) or 0.1
+        width_in = _float_field(form, "width_in")
+        height_in = _float_field(form, "height_in")
+        target_width_mm = width_in * MM_PER_INCH if width_in is not None else None
+        target_height_mm = height_in * MM_PER_INCH if height_in is not None else None
+        mesh_input = _prepare_mesh_input(
+            input_file,
+            upload_id,
+            stem,
+            fallback_scale,
+            target_width_mm,
+            target_height_mm,
+        )
+        max_pixel_count = _effective_max_pixels(mesh_input.mesh_pixel_count, requested_max_pixels)
 
         config = StencilConfig(
-            input_file=input_file,
+            input_file=mesh_input.path,
             output_file=output_file,
             base_thickness_mm=_float_field(form, "base_thickness", 2.0) or 2.0,
             relief_height_mm=_float_field(form, "relief_height", 1.5) or 1.5,
-            pixel_to_mm_scale=_float_field(form, "scale", 0.1) or 0.1,
-            target_width_mm=(
-                width_in * MM_PER_INCH if (width_in := _float_field(form, "width_in")) is not None else None
-            ),
-            target_height_mm=(
-                height_in * MM_PER_INCH if (height_in := _float_field(form, "height_in")) is not None else None
-            ),
+            pixel_to_mm_scale=fallback_scale,
+            target_width_mm=mesh_input.target_width_mm,
+            target_height_mm=mesh_input.target_height_mm,
             threshold=_int_field(form, "threshold", 128),
             mirror_x=_field_value(form, "mirror", "true") == "true",
             max_pixel_count=max_pixel_count,
@@ -654,6 +746,11 @@ class StencilWebHandler(BaseHTTPRequestHandler):
                 "metadata": _metadata_json(result.metadata),
                 "download_url": f"/download?id={download_id}",
                 "filename": output_file.name.removeprefix(f"{upload_id}-"),
+                "processing": {
+                    "original_pixel_count": mesh_input.original_pixel_count,
+                    "mesh_pixel_count": mesh_input.mesh_pixel_count,
+                    "optimized": mesh_input.mesh_pixel_count < mesh_input.original_pixel_count,
+                },
             }
         )
 

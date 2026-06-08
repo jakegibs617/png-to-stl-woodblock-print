@@ -1,6 +1,14 @@
 import pytest
+from PIL import Image
 
-from stencil_to_stl.app.web import WEB_AUTO_PIXEL_LIMIT, _effective_max_pixels, _safe_stem
+from stencil_to_stl.app.web import (
+    WEB_AUTO_PIXEL_LIMIT,
+    WEB_TARGET_MESH_PIXELS,
+    _effective_max_pixels,
+    _prepare_mesh_input,
+    _resized_dimensions,
+    _safe_stem,
+)
 
 
 def test_safe_stem_preserves_readable_filename() -> None:
@@ -22,3 +30,30 @@ def test_effective_max_pixels_honors_larger_explicit_cap() -> None:
 def test_effective_max_pixels_blocks_large_upload_without_explicit_cap() -> None:
     with pytest.raises(ValueError, match="automatic local limit"):
         _effective_max_pixels(WEB_AUTO_PIXEL_LIMIT + 1, 1_000_000)
+
+
+def test_resized_dimensions_keeps_aspect_under_target() -> None:
+    width, height = _resized_dimensions(1024, 1536, WEB_TARGET_MESH_PIXELS)
+
+    assert width * height <= WEB_TARGET_MESH_PIXELS + max(width, height)
+    assert round(width / height, 2) == round(1024 / 1536, 2)
+
+
+def test_prepare_mesh_input_downsamples_and_preserves_physical_size(tmp_path) -> None:
+    source = tmp_path / "source.png"
+    Image.new("RGBA", (1024, 1536), color=(0, 0, 0, 255)).save(source, dpi=(200, 200))
+
+    prepared = _prepare_mesh_input(
+        source,
+        "upload",
+        "source",
+        fallback_scale_mm=0.1,
+        target_width_mm=None,
+        target_height_mm=None,
+    )
+
+    assert prepared.path != source
+    assert prepared.original_pixel_count == 1024 * 1536
+    assert prepared.mesh_pixel_count < prepared.original_pixel_count
+    assert prepared.target_width_mm == pytest.approx((1024 / 200) * 25.4, abs=0.01)
+    assert prepared.target_height_mm == pytest.approx((1536 / 200) * 25.4, abs=0.01)
