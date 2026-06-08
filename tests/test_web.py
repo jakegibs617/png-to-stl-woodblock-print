@@ -3,6 +3,7 @@ from PIL import Image
 
 from stencil_to_stl.app.web import (
     ConversionJob,
+    HTML,
     WEB_AUTO_PIXEL_LIMIT,
     WEB_TARGET_MESH_PIXELS,
     _effective_max_pixels,
@@ -14,6 +15,14 @@ from stencil_to_stl.app.web import (
 
 def test_safe_stem_preserves_readable_filename() -> None:
     assert _safe_stem("Father's Day card.png") == "Father-s-Day-card"
+
+
+def test_web_ui_uses_inches_for_width_height_and_mm_for_thickness() -> None:
+    assert "Width inches" in HTML
+    assert "Height inches" in HTML
+    assert "Base mm" in HTML
+    assert "Relief mm" in HTML
+    assert "Thickness" in HTML
 
 
 def test_safe_stem_falls_back_for_empty_name() -> None:

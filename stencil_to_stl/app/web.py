@@ -408,10 +408,10 @@ HTML = """<!doctype html>
               <input name="scale" type="number" min="0.001" step="0.001" value="0.1">
             </label>
             <div class="row">
-              <label>Width in
+              <label>Width inches
                 <input name="width_in" type="number" min="0.01" step="0.01" placeholder="PNG">
               </label>
-              <label>Height in
+              <label>Height inches
                 <input name="height_in" type="number" min="0.01" step="0.01" placeholder="PNG">
               </label>
             </div>
@@ -537,10 +537,13 @@ HTML = """<!doctype html>
     }
 
     function renderMetadata(data, processing) {
+      const widthIn = data.physical_width_mm / 25.4;
+      const heightIn = data.physical_height_mm / 25.4;
       const rows = [
         ['Image', `${data.image_width_px} x ${data.image_height_px} px`],
-        ['Physical', `${data.physical_width_mm.toFixed(3)} x ${data.physical_height_mm.toFixed(3)} mm`],
-        ['Height', `${data.total_height_mm.toFixed(3)} mm`],
+        ['Physical', `${widthIn.toFixed(3)} x ${heightIn.toFixed(3)} in`],
+        ['Physical mm', `${data.physical_width_mm.toFixed(3)} x ${data.physical_height_mm.toFixed(3)} mm`],
+        ['Thickness', `${data.total_height_mm.toFixed(3)} mm`],
         ['Raised pixels', `${data.raised_pixel_count} (${data.raised_pixel_percent.toFixed(1)}%)`],
         ['Rectangles', `${data.estimated_relief_rectangles}`],
         ['Faces', `${data.estimated_mesh_faces}`],
