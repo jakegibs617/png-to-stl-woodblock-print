@@ -50,6 +50,14 @@ Preview conversion metadata without exporting an STL:
 stencil-to-stl input.png output.stl --preview-only
 ```
 
+Start the local browser UI:
+
+```bash
+stencil-to-stl-web
+```
+
+Then open `http://127.0.0.1:8765`.
+
 ## Defaults
 
 ```yaml
@@ -79,6 +87,7 @@ Current architecture:
 
 - `stencil_to_stl/app/cli.py` owns argument parsing and CLI preview display.
 - `stencil_to_stl/app/conversion.py` owns reusable conversion orchestration and structured metadata.
+- `stencil_to_stl/app/web.py` serves the local browser UI and download endpoint.
 - `stencil_to_stl/app/image_loader.py` loads PNG files into RGBA arrays.
 - `stencil_to_stl/app/mask_processor.py` converts RGBA pixels into a binary print mask and supports horizontal mirroring.
 - `stencil_to_stl/app/mesh_builder.py` turns the mask into a `trimesh.Trimesh` relief block using merged run rectangles.
@@ -87,15 +96,15 @@ Current architecture:
 
 Observed gaps:
 
-- There is no UI for loading a PNG. The project is currently CLI-only.
-- Preview output is still text-only in the CLI, though structured metadata is available from the conversion service.
+- The local browser UI is intentionally simple and still lacks a 3D mesh preview.
+- Preview output is still text-only in the CLI, though the browser UI displays structured metadata after generation.
 - Complex artwork can still produce non-watertight meshes in downstream mesh analysis and needs a dedicated manifold-surface pass.
 - The local `.venv` may become invalid when the project folder moves because script shebangs can point to an old path.
 
 Recommended architecture direction:
 
 - Keep the CLI as a thin wrapper around the shared conversion service.
-- Build the UI as another wrapper around the same service.
+- Keep the UI as another wrapper around the same service.
 - Continue optimizing mesh generation and watertightness before relying on the UI for large images.
 - Keep automated tests around the shared conversion service so CLI and UI behavior stay aligned.
 
