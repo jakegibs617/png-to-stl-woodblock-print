@@ -18,10 +18,13 @@ pip install -e ".[test]"
 stencil-to-stl input.png output.stl \
   --base-thickness 2.0 \
   --relief-height 1.5 \
-  --scale 0.1 \
   --threshold 128 \
   --mirror
 ```
+
+When the PNG includes DPI metadata, the STL uses the PNG's physical dimensions. If
+the PNG has no physical size metadata, `--scale` controls millimeters per source
+pixel.
 
 Disable mirroring:
 
@@ -29,7 +32,7 @@ Disable mirroring:
 stencil-to-stl input.png output.stl --no-mirror
 ```
 
-Generate at a specific physical size, such as a 5 x 7 inch block:
+Override the PNG physical size, such as forcing a 5 x 7 inch block:
 
 ```bash
 stencil-to-stl input.png output.stl --width-in 5 --height-in 7
