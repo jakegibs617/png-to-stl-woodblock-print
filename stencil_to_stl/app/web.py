@@ -15,12 +15,15 @@ warnings.filterwarnings("ignore", category=DeprecationWarning, message="'cgi' is
 
 import cgi
 
+from PIL import Image
+
 from stencil_to_stl.app.config import MAX_PIXEL_COUNT_DEFAULT, MM_PER_INCH, StencilConfig
 from stencil_to_stl.app.conversion import ConversionMetadata, convert_stencil
 
 
 HOST = "127.0.0.1"
 PORT = 8765
+WEB_AUTO_PIXEL_LIMIT = 2_000_000
 WORK_DIR = Path(tempfile.mkdtemp(prefix="stencil-to-stl-web-"))
 UPLOAD_DIR = WORK_DIR / "uploads"
 OUTPUT_DIR = WORK_DIR / "outputs"
@@ -383,7 +386,7 @@ HTML = """<!doctype html>
             <label>Threshold
               <input name="threshold" type="number" min="0" max="255" step="1" value="128">
             </label>
-            <label>Max pixels
+            <label>Safety cap pixels
               <input name="max_pixels" type="number" min="1" step="1" value="1000000">
             </label>
             <label class="check">
@@ -554,6 +557,24 @@ def _int_field(form: cgi.FieldStorage, name: str, default: int) -> int:
     return int(value) if value else default
 
 
+def _png_pixel_count(path: Path) -> int:
+    with Image.open(path) as image:
+        if image.format != "PNG":
+            raise ValueError("Input file must be a PNG.")
+        return image.width * image.height
+
+
+def _effective_max_pixels(pixel_count: int, requested_max_pixels: int) -> int:
+    if pixel_count <= requested_max_pixels:
+        return requested_max_pixels
+    if pixel_count <= WEB_AUTO_PIXEL_LIMIT:
+        return pixel_count
+    raise ValueError(
+        f"Image has {pixel_count:,} pixels, which exceeds the automatic local limit of "
+        f"{WEB_AUTO_PIXEL_LIMIT:,}. Enter a larger max-pixels value to generate it anyway."
+    )
+
+
 def _metadata_json(metadata: ConversionMetadata) -> dict[str, object]:
     return asdict(metadata)
 
@@ -605,6 +626,9 @@ class StencilWebHandler(BaseHTTPRequestHandler):
         with input_file.open("wb") as handle:
             handle.write(image_field.file.read())
 
+        requested_max_pixels = _int_field(form, "max_pixels", MAX_PIXEL_COUNT_DEFAULT)
+        max_pixel_count = _effective_max_pixels(_png_pixel_count(input_file), requested_max_pixels)
+
         config = StencilConfig(
             input_file=input_file,
             output_file=output_file,
@@ -619,7 +643,7 @@ class StencilWebHandler(BaseHTTPRequestHandler):
             ),
             threshold=_int_field(form, "threshold", 128),
             mirror_x=_field_value(form, "mirror", "true") == "true",
-            max_pixel_count=_int_field(form, "max_pixels", MAX_PIXEL_COUNT_DEFAULT),
+            max_pixel_count=max_pixel_count,
         )
 
         result = convert_stencil(config)
