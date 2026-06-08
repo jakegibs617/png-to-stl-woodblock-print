@@ -7,14 +7,17 @@ from stencil_to_stl.app.config import StencilConfig
 from stencil_to_stl.app.conversion import convert_stencil, preview_conversion
 
 
-def _make_png(tmp_path: Path) -> Path:
+def _make_png(tmp_path: Path, *, dpi: tuple[int, int] | None = None) -> Path:
     path = tmp_path / "input.png"
     image = Image.new("RGBA", (4, 3), color=(255, 255, 255, 0))
     image.putpixel((0, 0), (0, 0, 0, 255))
     image.putpixel((1, 0), (0, 0, 0, 255))
     image.putpixel((0, 1), (0, 0, 0, 255))
     image.putpixel((1, 1), (0, 0, 0, 255))
-    image.save(path)
+    if dpi is None:
+        image.save(path)
+    else:
+        image.save(path, dpi=dpi)
     return path
 
 
@@ -81,6 +84,32 @@ def test_preview_conversion_uses_target_physical_size(tmp_path: Path) -> None:
     assert metadata.physical_width_mm == 127.0
     assert metadata.physical_height_mm == 177.8
     assert metadata.warnings == ()
+
+
+def test_preview_conversion_uses_png_physical_size_when_present(tmp_path: Path) -> None:
+    png = _make_png(tmp_path, dpi=(100, 100))
+    config = StencilConfig(input_file=png, output_file=tmp_path / "out.stl", mirror_x=False)
+
+    metadata = preview_conversion(config)
+
+    assert round(metadata.physical_width_mm, 3) == 1.016
+    assert round(metadata.physical_height_mm, 3) == 0.762
+
+
+def test_target_size_overrides_png_physical_size(tmp_path: Path) -> None:
+    png = _make_png(tmp_path, dpi=(100, 100))
+    config = StencilConfig(
+        input_file=png,
+        output_file=tmp_path / "out.stl",
+        target_width_mm=127.0,
+        target_height_mm=177.8,
+        mirror_x=False,
+    )
+
+    metadata = preview_conversion(config)
+
+    assert metadata.physical_width_mm == 127.0
+    assert metadata.physical_height_mm == 177.8
 
 
 def test_convert_stencil_can_return_mesh_without_exporting(tmp_path: Path) -> None:

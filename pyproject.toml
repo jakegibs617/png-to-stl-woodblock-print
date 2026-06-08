@@ -21,7 +21,7 @@ test = [
 
 [project.scripts]
 stencil-to-stl = "stencil_to_stl.app.cli:main"
+stencil-to-stl-web = "stencil_to_stl.app.web:main"
 
 [tool.setuptools.packages.find]
 include = ["stencil_to_stl*"]
-

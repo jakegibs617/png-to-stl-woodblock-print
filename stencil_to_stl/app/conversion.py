@@ -6,7 +6,7 @@ import numpy as np
 import trimesh
 
 from stencil_to_stl.app.config import StencilConfig
-from stencil_to_stl.app.image_loader import load_png_rgba
+from stencil_to_stl.app.image_loader import load_png_rgba, png_physical_size_mm
 from stencil_to_stl.app.mask_processor import black_pixel_mask, fill_diagonal_contacts, horizontal_runs, mirror_mask_x
 from stencil_to_stl.app.mesh_builder import (
     Rectangle,
@@ -36,37 +36,58 @@ class ConversionMetadata:
 
 
 @dataclass(frozen=True)
+class LoadedMask:
+    mask: np.ndarray
+    png_physical_size_mm: tuple[float, float] | None
+
+
+@dataclass(frozen=True)
 class ConversionResult:
     metadata: ConversionMetadata
     mesh: trimesh.Trimesh | None = None
 
 
-def _load_mask(config: StencilConfig) -> np.ndarray:
+def _load_mask(config: StencilConfig) -> LoadedMask:
     rgba = load_png_rgba(config.input_file, max_pixel_count=config.max_pixel_count)
+    physical_size_mm = png_physical_size_mm(config.input_file, max_pixel_count=config.max_pixel_count)
     mask = black_pixel_mask(rgba, config.threshold)
     if config.mirror_x:
         mask = mirror_mask_x(mask)
     mask = fill_diagonal_contacts(mask)
     if not mask.any():
         raise ValueError("No black print pixels were detected.")
-    return mask
+    return LoadedMask(mask=mask, png_physical_size_mm=physical_size_mm)
 
 
-def _warnings_for_mask(mask: np.ndarray, config: StencilConfig) -> tuple[str, ...]:
+def _warnings_for_mask(
+    mask: np.ndarray,
+    config: StencilConfig,
+    png_physical_size_mm: tuple[float, float] | None,
+) -> tuple[str, ...]:
     runs = horizontal_runs(mask)
     if not runs:
         return ()
-    x_scale, _ = _pixel_scales_for_mask(mask, config)
+    x_scale, _ = _pixel_scales_for_mask(mask, config, png_physical_size_mm)
     min_width_mm = min(run.width_px for run in runs) * x_scale
     if min_width_mm < 0.8:
         return ("Very thin raised lines may fail to print or break. Recommended minimum: 0.4-0.8 mm.",)
     return ()
 
 
-def _pixel_scales_for_mask(mask: np.ndarray, config: StencilConfig) -> tuple[float, float]:
+def _pixel_scales_for_mask(
+    mask: np.ndarray,
+    config: StencilConfig,
+    png_physical_size_mm: tuple[float, float] | None,
+) -> tuple[float, float]:
     height_px, width_px = mask.shape
-    x_scale = config.target_width_mm / width_px if config.target_width_mm is not None else config.pixel_to_mm_scale
-    y_scale = config.target_height_mm / height_px if config.target_height_mm is not None else config.pixel_to_mm_scale
+    fallback_width_mm = png_physical_size_mm[0] if png_physical_size_mm is not None else None
+    fallback_height_mm = png_physical_size_mm[1] if png_physical_size_mm is not None else None
+    x_scale = (
+        config.target_width_mm or fallback_width_mm
+    ) / width_px if config.target_width_mm is not None or fallback_width_mm is not None else config.pixel_to_mm_scale
+    y_scale = (
+        config.target_height_mm or fallback_height_mm
+    ) / height_px if config.target_height_mm is not None or fallback_height_mm is not None else config.pixel_to_mm_scale
     return x_scale, y_scale
 
 
@@ -74,14 +95,15 @@ def _metadata_for_mask(
     mask: np.ndarray,
     config: StencilConfig,
     relief_rectangles: list[Rectangle],
+    png_physical_size_mm: tuple[float, float] | None,
 ) -> ConversionMetadata:
-    pixel_scales = _pixel_scales_for_mask(mask, config)
+    pixel_scales = _pixel_scales_for_mask(mask, config, png_physical_size_mm)
     width_mm, height_mm = physical_dimensions(mask, pixel_scales)
     raised_pixel_count = int(mask.sum())
     total_pixels = int(mask.size)
     relief_rectangle_count = len(relief_rectangles)
     estimated_faces = estimate_mesh_faces(mask)
-    warnings = _warnings_for_mask(mask, config)
+    warnings = _warnings_for_mask(mask, config, png_physical_size_mm)
 
     return ConversionMetadata(
         image_width_px=int(mask.shape[1]),
@@ -102,21 +124,23 @@ def _metadata_for_mask(
 
 def preview_conversion(config: StencilConfig) -> ConversionMetadata:
     config.validate_input()
-    mask = _load_mask(config)
+    loaded = _load_mask(config)
+    mask = loaded.mask
     relief_rectangles = merged_run_rectangles(mask)
-    return _metadata_for_mask(mask, config, relief_rectangles)
+    return _metadata_for_mask(mask, config, relief_rectangles, loaded.png_physical_size_mm)
 
 
 def convert_stencil(config: StencilConfig, *, export: bool = True) -> ConversionResult:
     config.validate()
-    mask = _load_mask(config)
+    loaded = _load_mask(config)
+    mask = loaded.mask
     relief_rectangles = merged_run_rectangles(mask)
-    metadata = _metadata_for_mask(mask, config, relief_rectangles)
+    metadata = _metadata_for_mask(mask, config, relief_rectangles, loaded.png_physical_size_mm)
     mesh = build_relief_mesh(
         mask,
         base_thickness_mm=config.base_thickness_mm,
         relief_height_mm=config.relief_height_mm,
-        pixel_to_mm_scale=_pixel_scales_for_mask(mask, config),
+        pixel_to_mm_scale=_pixel_scales_for_mask(mask, config, loaded.png_physical_size_mm),
         relief_rectangles=relief_rectangles,
     )
     if export:
