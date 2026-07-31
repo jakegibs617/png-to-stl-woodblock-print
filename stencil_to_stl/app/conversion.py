@@ -6,8 +6,10 @@ import numpy as np
 import trimesh
 
 from stencil_to_stl.app.config import StencilConfig
+from stencil_to_stl.app.feature_analysis import measure_features, widen_thin_features
+from stencil_to_stl.app.height_field import build_height_field
 from stencil_to_stl.app.image_loader import load_png_rgba, png_physical_size_mm
-from stencil_to_stl.app.mask_processor import black_pixel_mask, fill_diagonal_contacts, horizontal_runs, mirror_mask_x
+from stencil_to_stl.app.mask_processor import black_pixel_mask, fill_diagonal_contacts, mirror_mask_x
 from stencil_to_stl.app.mesh_builder import (
     Rectangle,
     build_relief_mesh,
@@ -32,6 +34,11 @@ class ConversionMetadata:
     estimated_relief_rectangles: int
     estimated_mesh_faces: int
     mirrored: bool
+    min_feature_width_mm: float
+    thin_area_percent: float
+    widened_pixel_count: int
+    merged_feature_count: int
+    chamfer_height_mm: float
     warnings: tuple[str, ...]
 
 
@@ -59,19 +66,86 @@ def _load_mask(config: StencilConfig) -> LoadedMask:
     return LoadedMask(mask=mask, png_physical_size_mm=physical_size_mm)
 
 
-def _warnings_for_mask(
+@dataclass(frozen=True)
+class SupportedMask:
+    """A mask made printable, plus what had to change to get it there."""
+
+    mask: np.ndarray
+    min_feature_width_mm: float
+    thin_area_fraction: float
+    widened_pixel_count: int
+    merged_feature_count: int
+    warnings: tuple[str, ...]
+
+
+def _apply_thin_line_support(
     mask: np.ndarray,
     config: StencilConfig,
     png_physical_size_mm: tuple[float, float] | None,
-) -> tuple[str, ...]:
-    runs = horizontal_runs(mask)
-    if not runs:
-        return ()
-    x_scale, _ = _pixel_scales_for_mask(mask, config, png_physical_size_mm)
-    min_width_mm = min(run.width_px for run in runs) * x_scale
-    if min_width_mm < 0.8:
-        return ("Very thin raised lines may fail to print or break. Recommended minimum: 0.4-0.8 mm.",)
-    return ()
+) -> SupportedMask:
+    """Measure thin features and grow the ones too narrow to print.
+
+    Measured before any widening, so the reported width describes the artwork as
+    supplied rather than the version this step produced.
+    """
+    x_scale, y_scale = _pixel_scales_for_mask(mask, config, png_physical_size_mm)
+    scales = {"x_scale_mm": x_scale, "y_scale_mm": y_scale}
+    report = measure_features(mask, min_width_mm=config.min_feature_width_mm, **scales)
+
+    warnings: list[str] = []
+    widened_pixels = 0
+    merged = 0
+
+    if report.thin_pixel_count and config.widen_thin_features:
+        mask, widening = widen_thin_features(mask, min_width_mm=config.min_feature_width_mm, **scales)
+        widened_pixels = widening.pixels_added
+        merged = widening.merged_features
+
+    if widened_pixels:
+        warnings.append(
+            f"Grew features narrower than {config.min_feature_width_mm:g} mm so they can print "
+            f"({widened_pixels:,} pixels added). Narrowest feature was {report.min_width_mm:.2f} mm."
+        )
+        if merged:
+            warnings.append(
+                f"Widening closed narrow gaps and merged {merged} separate feature(s). "
+                "Check fine detail, or rerun with --no-widen to keep them apart."
+            )
+    elif report.thin_pixel_count:
+        # Either widening is switched off, or it had no room to grow into.
+        warnings.append(
+            f"{report.thin_area_fraction * 100:.1f}% of the raised area is narrower than "
+            f"{config.min_feature_width_mm:g} mm and may not print. Narrowest feature is "
+            f"{report.min_width_mm:.2f} mm."
+        )
+
+    if not config.chamfer_enabled:
+        warnings.append("Chamfer disabled: raised features meet the base plate at a square corner.")
+
+    return SupportedMask(
+        mask=mask,
+        min_feature_width_mm=report.min_width_mm,
+        thin_area_fraction=report.thin_area_fraction,
+        widened_pixel_count=widened_pixels,
+        merged_feature_count=merged,
+        warnings=tuple(warnings),
+    )
+
+
+def _height_field_for(
+    mask: np.ndarray,
+    config: StencilConfig,
+    png_physical_size_mm: tuple[float, float] | None,
+) -> np.ndarray:
+    x_scale, y_scale = _pixel_scales_for_mask(mask, config, png_physical_size_mm)
+    return build_height_field(
+        mask,
+        base_thickness_mm=config.base_thickness_mm,
+        relief_height_mm=config.relief_height_mm,
+        chamfer_height_mm=config.chamfer_height_mm,
+        x_scale_mm=x_scale,
+        y_scale_mm=y_scale,
+    )
 
 
 def _pixel_scales_for_mask(
@@ -94,6 +168,8 @@ def _pixel_scales_for_mask(
 def _metadata_for_mask(
     mask: np.ndarray,
     config: StencilConfig,
+    supported: SupportedMask,
+    height_field: np.ndarray,
     relief_rectangles: list[Rectangle],
     png_physical_size_mm: tuple[float, float] | None,
 ) -> ConversionMetadata:
@@ -101,9 +177,6 @@ def _metadata_for_mask(
     width_mm, height_mm = physical_dimensions(mask, pixel_scales)
     raised_pixel_count = int(mask.sum())
     total_pixels = int(mask.size)
-    relief_rectangle_count = len(relief_rectangles)
-    estimated_faces = estimate_mesh_faces(mask)
-    warnings = _warnings_for_mask(mask, config, png_physical_size_mm)
 
     return ConversionMetadata(
         image_width_px=int(mask.shape[1]),
@@ -115,34 +188,46 @@ def _metadata_for_mask(
         total_height_mm=config.base_thickness_mm + config.relief_height_mm,
         raised_pixel_count=raised_pixel_count,
         raised_pixel_percent=(raised_pixel_count / total_pixels) * 100,
-        estimated_relief_rectangles=relief_rectangle_count,
-        estimated_mesh_faces=estimated_faces,
+        estimated_relief_rectangles=len(relief_rectangles),
+        estimated_mesh_faces=estimate_mesh_faces(height_field),
         mirrored=config.mirror_x,
-        warnings=warnings,
+        min_feature_width_mm=supported.min_feature_width_mm,
+        thin_area_percent=supported.thin_area_fraction * 100,
+        widened_pixel_count=supported.widened_pixel_count,
+        merged_feature_count=supported.merged_feature_count,
+        chamfer_height_mm=config.chamfer_height_mm,
+        warnings=supported.warnings,
     )
+
+
+def _prepare(config: StencilConfig) -> tuple[np.ndarray, np.ndarray, ConversionMetadata]:
+    """Load the artwork, make it printable, and build the block's height field."""
+    loaded = _load_mask(config)
+    supported = _apply_thin_line_support(loaded.mask, config, loaded.png_physical_size_mm)
+    mask = supported.mask
+    height_field = _height_field_for(mask, config, loaded.png_physical_size_mm)
+    metadata = _metadata_for_mask(
+        mask,
+        config,
+        supported,
+        height_field,
+        merged_run_rectangles(mask),
+        loaded.png_physical_size_mm,
+    )
+    scales = _pixel_scales_for_mask(mask, config, loaded.png_physical_size_mm)
+    return height_field, np.array(scales), metadata
 
 
 def preview_conversion(config: StencilConfig) -> ConversionMetadata:
     config.validate_input()
-    loaded = _load_mask(config)
-    mask = loaded.mask
-    relief_rectangles = merged_run_rectangles(mask)
-    return _metadata_for_mask(mask, config, relief_rectangles, loaded.png_physical_size_mm)
+    _, _, metadata = _prepare(config)
+    return metadata
 
 
 def convert_stencil(config: StencilConfig, *, export: bool = True) -> ConversionResult:
     config.validate()
-    loaded = _load_mask(config)
-    mask = loaded.mask
-    relief_rectangles = merged_run_rectangles(mask)
-    metadata = _metadata_for_mask(mask, config, relief_rectangles, loaded.png_physical_size_mm)
-    mesh = build_relief_mesh(
-        mask,
-        base_thickness_mm=config.base_thickness_mm,
-        relief_height_mm=config.relief_height_mm,
-        pixel_to_mm_scale=_pixel_scales_for_mask(mask, config, loaded.png_physical_size_mm),
-        relief_rectangles=relief_rectangles,
-    )
+    height_field, scales, metadata = _prepare(config)
+    mesh = build_relief_mesh(height_field, pixel_to_mm_scale=(float(scales[0]), float(scales[1])))
     if export:
         export_stl(mesh, config.output_file)
     return ConversionResult(metadata=metadata, mesh=mesh)
