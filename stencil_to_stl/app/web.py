@@ -19,16 +19,31 @@ warnings.filterwarnings("ignore", category=DeprecationWarning, message="'cgi' is
 
 import cgi
 
+import numpy as np
 from PIL import Image
 
-from stencil_to_stl.app.config import MAX_PIXEL_COUNT_DEFAULT, MM_PER_INCH, StencilConfig
+from stencil_to_stl.app.config import (
+    CHAMFER_HEIGHT_MM_DEFAULT,
+    MAX_PIXEL_COUNT_DEFAULT,
+    MIN_FEATURE_WIDTH_MM_DEFAULT,
+    MM_PER_INCH,
+    StencilConfig,
+)
 from stencil_to_stl.app.conversion import ConversionMetadata, convert_stencil
+from stencil_to_stl.app.mask_processor import black_pixel_mask
 
 
 HOST = "127.0.0.1"
 PORT = 8765
 WEB_AUTO_PIXEL_LIMIT = 2_000_000
-WEB_TARGET_MESH_PIXELS = 100_000
+# At 5x7 inches this lands near 0.25 mm per pixel, so the 0.8 mm minimum feature
+# spans about three pixels. The previous 100k put it at 0.49 mm per pixel, where a
+# thin line covered barely one and a half pixels and could vanish in the resample.
+WEB_TARGET_MESH_PIXELS = 400_000
+# Most area coverage a target pixel is ever asked for before it counts as ink.
+# The actual bar is lower and tracks the reduction, because the coverage a thin
+# line can produce shrinks as the image does.
+WEB_MAX_COVERAGE_THRESHOLD = 0.5
 WORK_DIR = Path(tempfile.mkdtemp(prefix="stencil-to-stl-web-"))
 UPLOAD_DIR = WORK_DIR / "uploads"
 OUTPUT_DIR = WORK_DIR / "outputs"
@@ -431,6 +446,20 @@ HTML = """<!doctype html>
             </label>
           </fieldset>
 
+          <fieldset>
+            <legend>Thin line support</legend>
+            <label>Minimum feature width mm
+              <input name="min_feature_width" type="number" min="0.05" step="0.05" value="0.8">
+            </label>
+            <label>Root chamfer height mm
+              <input name="chamfer_height" type="number" min="0" step="0.05" value="0.5">
+            </label>
+            <label class="check">
+              Widen features too narrow to print
+              <input name="widen" type="checkbox" checked>
+            </label>
+          </fieldset>
+
           <div class="actions">
             <button id="generateButton" type="submit">Generate STL</button>
             <button class="secondary" type="button" id="resetButton">Reset</button>
@@ -539,16 +568,25 @@ HTML = """<!doctype html>
     function renderMetadata(data, processing) {
       const widthIn = data.physical_width_mm / 25.4;
       const heightIn = data.physical_height_mm / 25.4;
+      const resolutionMm = data.physical_width_mm / data.image_width_px;
       const rows = [
         ['Image', `${data.image_width_px} x ${data.image_height_px} px`],
         ['Physical', `${widthIn.toFixed(3)} x ${heightIn.toFixed(3)} in`],
         ['Physical mm', `${data.physical_width_mm.toFixed(3)} x ${data.physical_height_mm.toFixed(3)} mm`],
+        ['Resolution', `${resolutionMm.toFixed(3)} mm per pixel`],
         ['Thickness', `${data.total_height_mm.toFixed(3)} mm`],
         ['Raised pixels', `${data.raised_pixel_count} (${data.raised_pixel_percent.toFixed(1)}%)`],
+        ['Narrowest feature', `${data.min_feature_width_mm.toFixed(2)} mm`],
+        ['Below minimum', `${data.thin_area_percent.toFixed(1)}% of raised area`],
+        ['Widened pixels', `${data.widened_pixel_count}`],
+        ['Root chamfer', data.chamfer_height_mm ? `${data.chamfer_height_mm} mm at 45 deg` : 'none'],
         ['Rectangles', `${data.estimated_relief_rectangles}`],
         ['Faces', `${data.estimated_mesh_faces}`],
         ['Mirrored', data.mirrored ? 'yes' : 'no']
       ];
+      if (data.merged_feature_count) {
+        rows.splice(9, 0, ['Features merged', `${data.merged_feature_count}`]);
+      }
       if (processing && processing.optimized) {
         rows.splice(1, 0, ['Source pixels', `${processing.original_pixel_count}`]);
       }
@@ -573,7 +611,10 @@ HTML = """<!doctype html>
 
       const body = new FormData(form);
       body.set('image', selectedFile);
+      // Checkboxes submit "on" when ticked and nothing at all when cleared, so
+      // send the state outright rather than letting the server guess from absence.
       body.set('mirror', form.elements.mirror.checked ? 'true' : 'false');
+      body.set('widen', form.elements.widen.checked ? 'true' : 'false');
 
       generateButton.disabled = true;
       downloadLink.classList.add('hidden');
@@ -692,6 +733,20 @@ def _int_field(form: cgi.FieldStorage, name: str, default: int) -> int:
     return int(value) if value else default
 
 
+def _checkbox_field(form: cgi.FieldStorage, name: str, default: bool) -> bool:
+    """Read a checkbox that a browser may report as "on", "true", or not at all.
+
+    A ticked checkbox submits its value attribute, which is "on" unless one is
+    given, and a cleared one is left out of the form entirely. Comparing against
+    "true" alone therefore reads every ticked box as off, and a missing field is
+    indistinguishable from a deliberately cleared one.
+    """
+    value = _field_value(form, name).strip().lower()
+    if not value:
+        return default
+    return value not in {"false", "off", "0", "no"}
+
+
 def _png_info(path: Path) -> WebImageInfo:
     with Image.open(path) as image:
         if image.format != "PNG":
@@ -726,6 +781,51 @@ def _resized_dimensions(width_px: int, height_px: int, target_pixels: int) -> tu
     return max(1, round(width_px * scale)), max(1, round(height_px * scale))
 
 
+def _coverage_threshold(source: tuple[int, int], target: tuple[int, int]) -> float:
+    """Coverage fraction that still counts as ink at this reduction.
+
+    Each output pixel averages a box of roughly ``support`` source pixels across,
+    so the thinnest possible line — one source pixel wide — contributes only
+    ``1 / support`` of it. Asking for half coverage would erase that line outright.
+    The bar is set at half what such a line yields, which also carries the case
+    where a line straddles two output pixels and splits its coverage between them.
+    """
+    support = max(
+        math.ceil(source[0] / target[0]),
+        math.ceil(source[1] / target[1]),
+        1,
+    )
+    return min(WEB_MAX_COVERAGE_THRESHOLD, 1 / (2 * support))
+
+
+def _downsample_mask(input_file: Path, threshold: int, size: tuple[int, int]) -> Image.Image:
+    """Decide what is ink at full resolution, then shrink that decision.
+
+    Resampling the artwork first and thresholding afterwards loses thin lines
+    twice over: interpolation smears a dark line into its pale surroundings, and
+    the hard threshold then discards the smeared tails, so a hairline can be gone
+    before anything has a chance to measure it. Thresholding first keeps the line
+    at full strength, and averaging the resulting mask gives each target pixel the
+    fraction of it the artwork actually covers.
+
+    Keeping a feature matters more than keeping its exact width here, because a
+    line that survives gets grown to a printable size later while one that was
+    averaged away cannot be recovered by anything downstream.
+    """
+    with Image.open(input_file) as image:
+        rgba = np.array(image.convert("RGBA"), dtype=np.uint8)
+
+    mask = black_pixel_mask(rgba, threshold)
+    coverage = Image.fromarray((mask * 255).astype(np.uint8), mode="L")
+    coverage = coverage.resize(size, Image.Resampling.BOX)
+
+    minimum = _coverage_threshold((mask.shape[1], mask.shape[0]), size) * 255
+    inked = np.array(coverage, dtype=np.uint8) >= minimum
+    shrunk = np.zeros((size[1], size[0], 4), dtype=np.uint8)
+    shrunk[inked, 3] = 255  # black where inked, fully transparent elsewhere
+    return Image.fromarray(shrunk, mode="RGBA")
+
+
 def _prepare_mesh_input(
     input_file: Path,
     upload_id: str,
@@ -733,6 +833,7 @@ def _prepare_mesh_input(
     fallback_scale_mm: float,
     target_width_mm: float | None,
     target_height_mm: float | None,
+    threshold: int,
 ) -> MeshInput:
     info = _png_info(input_file)
     original_width_mm, original_height_mm = _physical_size_mm(info, fallback_scale_mm)
@@ -750,13 +851,12 @@ def _prepare_mesh_input(
         )
 
     optimized_file = UPLOAD_DIR / f"{upload_id}-{stem}-mesh.png"
-    with Image.open(input_file) as image:
-        resized = image.convert("RGBA").resize((resized_width, resized_height), Image.Resampling.LANCZOS)
-        dpi = (
-            resized_width / (physical_width_mm / MM_PER_INCH),
-            resized_height / (physical_height_mm / MM_PER_INCH),
-        )
-        resized.save(optimized_file, format="PNG", dpi=dpi)
+    resized = _downsample_mask(input_file, threshold, (resized_width, resized_height))
+    dpi = (
+        resized_width / (physical_width_mm / MM_PER_INCH),
+        resized_height / (physical_height_mm / MM_PER_INCH),
+    )
+    resized.save(optimized_file, format="PNG", dpi=dpi)
 
     return MeshInput(
         path=optimized_file,
@@ -797,6 +897,8 @@ def _prepare_conversion(form: cgi.FieldStorage) -> PreparedConversion:
     height_in = _float_field(form, "height_in")
     target_width_mm = width_in * MM_PER_INCH if width_in is not None else None
     target_height_mm = height_in * MM_PER_INCH if height_in is not None else None
+    # Read before resampling: the mask is now thresholded at full resolution.
+    threshold = _int_field(form, "threshold", 128)
     mesh_input = _prepare_mesh_input(
         input_file,
         upload_id,
@@ -804,9 +906,11 @@ def _prepare_conversion(form: cgi.FieldStorage) -> PreparedConversion:
         fallback_scale,
         target_width_mm,
         target_height_mm,
+        threshold,
     )
     max_pixel_count = _effective_max_pixels(mesh_input.mesh_pixel_count, requested_max_pixels)
 
+    chamfer_height = _float_field(form, "chamfer_height", CHAMFER_HEIGHT_MM_DEFAULT)
     config = StencilConfig(
         input_file=mesh_input.path,
         output_file=output_file,
@@ -815,9 +919,13 @@ def _prepare_conversion(form: cgi.FieldStorage) -> PreparedConversion:
         pixel_to_mm_scale=fallback_scale,
         target_width_mm=mesh_input.target_width_mm,
         target_height_mm=mesh_input.target_height_mm,
-        threshold=_int_field(form, "threshold", 128),
-        mirror_x=_field_value(form, "mirror", "true") == "true",
+        threshold=threshold,
+        mirror_x=_checkbox_field(form, "mirror", default=True),
         max_pixel_count=max_pixel_count,
+        min_feature_width_mm=_float_field(form, "min_feature_width", MIN_FEATURE_WIDTH_MM_DEFAULT)
+        or MIN_FEATURE_WIDTH_MM_DEFAULT,
+        chamfer_height_mm=CHAMFER_HEIGHT_MM_DEFAULT if chamfer_height is None else chamfer_height,
+        widen_thin_features=_checkbox_field(form, "widen", default=True),
     )
     return PreparedConversion(config=config, mesh_input=mesh_input, output_file=output_file, upload_id=upload_id)
 

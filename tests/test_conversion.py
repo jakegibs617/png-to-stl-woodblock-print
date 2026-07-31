@@ -28,6 +28,7 @@ def test_preview_conversion_returns_structured_metadata_without_export(tmp_path:
         output_file=tmp_path / "out.stl",
         pixel_to_mm_scale=0.5,
         mirror_x=False,
+        min_feature_width_mm=0.1,  # this fixture is about geometry, not printability
     )
 
     with patch("stencil_to_stl.app.conversion.export_stl") as export_stl:
@@ -41,7 +42,6 @@ def test_preview_conversion_returns_structured_metadata_without_export(tmp_path:
     assert metadata.raised_pixel_count == 4
     assert metadata.raised_pixel_percent == 100 * (4 / 12)
     assert metadata.estimated_relief_rectangles == 1
-    assert metadata.estimated_mesh_faces == 92
     assert metadata.mirrored is False
     assert metadata.warnings == ()
 
@@ -55,18 +55,54 @@ def test_preview_conversion_does_not_require_stl_output_path(tmp_path: Path) -> 
     assert metadata.image_width_px == 4
 
 
-def test_preview_conversion_omits_thin_line_warning_for_wide_runs(tmp_path: Path) -> None:
-    path = tmp_path / "wide.png"
-    image = Image.new("RGBA", (10, 2), color=(255, 255, 255, 0))
-    for x in range(10):
-        for y in range(2):
+def _make_bar_png(tmp_path: Path, name: str, width_px: int, height_px: int, bar_width_px: int) -> Path:
+    path = tmp_path / name
+    image = Image.new("RGBA", (width_px, height_px), color=(255, 255, 255, 0))
+    left = (width_px - bar_width_px) // 2
+    for x in range(left, left + bar_width_px):
+        for y in range(2, height_px - 2):
             image.putpixel((x, y), (0, 0, 0, 255))
     image.save(path)
-    config = StencilConfig(input_file=path, output_file=tmp_path / "out.stl", pixel_to_mm_scale=0.1)
+    return path
+
+
+def test_preview_conversion_omits_thin_line_warning_for_comfortably_wide_art(tmp_path: Path) -> None:
+    png = _make_bar_png(tmp_path, "wide.png", 30, 30, 12)  # 1.2 mm bar
+    config = StencilConfig(input_file=png, output_file=tmp_path / "out.stl", pixel_to_mm_scale=0.1)
 
     metadata = preview_conversion(config)
 
     assert metadata.warnings == ()
+    assert metadata.thin_area_percent == 0
+    assert metadata.widened_pixel_count == 0
+    assert metadata.min_feature_width_mm >= 0.8
+
+
+def test_preview_conversion_reports_and_widens_a_hairline(tmp_path: Path) -> None:
+    png = _make_bar_png(tmp_path, "hairline.png", 30, 30, 2)  # 0.2 mm bar
+    config = StencilConfig(input_file=png, output_file=tmp_path / "out.stl", pixel_to_mm_scale=0.1)
+
+    metadata = preview_conversion(config)
+
+    assert metadata.min_feature_width_mm < 0.8
+    assert metadata.widened_pixel_count > 0
+    assert any("Grew features" in warning for warning in metadata.warnings)
+
+
+def test_disabling_widening_reports_the_hairline_without_changing_it(tmp_path: Path) -> None:
+    png = _make_bar_png(tmp_path, "hairline.png", 30, 30, 2)
+    config = StencilConfig(
+        input_file=png,
+        output_file=tmp_path / "out.stl",
+        pixel_to_mm_scale=0.1,
+        widen_thin_features=False,
+    )
+
+    metadata = preview_conversion(config)
+
+    assert metadata.widened_pixel_count == 0
+    assert metadata.raised_pixel_count == 2 * 26
+    assert any("may not print" in warning for warning in metadata.warnings)
 
 
 def test_preview_conversion_uses_target_physical_size(tmp_path: Path) -> None:

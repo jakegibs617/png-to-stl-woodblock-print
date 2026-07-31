@@ -4,6 +4,8 @@ Generate a 3D-printable STL relief block from a black-and-transparent PNG stenci
 
 Transparent pixels become a rectangular base plate. Black or near-black pixels become raised print areas with a flat, consistent height. The image is mirrored horizontally by default because relief blocks print reversed onto paper.
 
+Raised features are measured for printability, grown when they are too narrow to survive, and given a chamfered root so they do not snap off the plate. See [Thin Line Support](#thin-line-support).
+
 ## Install
 
 ```bash
@@ -66,12 +68,55 @@ relief_height_mm: 1.5
 pixel_to_mm_scale: 0.1
 threshold: 128
 mirror_x: true
+min_feature_width_mm: 0.8
+chamfer_height_mm: 0.5
+widen_thin_features: true
 output_units: millimeters
 ```
 
+## Thin Line Support
+
+A raised line is a cantilevered wall. Bending stress at its root grows with the
+square of its height-to-width ratio, which is why fine detail snaps off a relief
+block while thick areas survive. Two different failures come out of that, and
+they need different answers.
+
+**Too narrow to exist.** Below roughly one extrusion width the printer cannot lay
+the line down at all, and no amount of geometry recovers it. Features narrower
+than `--min-feature-width` are therefore grown until they are printable. Only the
+narrow material grows; artwork already wide enough is left untouched. Widening can
+close a narrow gap and fuse two features into one, so the run reports how many
+features merged. Use `--no-widen` to measure and report without changing artwork.
+
+**Wide enough to print, weak enough to break.** Every raised feature gets a 45
+degree chamfer at its root, adding material exactly where the bending moment
+peaks and removing the square notch the wall would otherwise meet the plate with.
+The chamfer is capped at `--chamfer-height` rather than running the full relief,
+so where two features are close enough for their skirts to meet, the valley
+between them still keeps `relief_height - chamfer_height` of ink clearance. The
+top surface is untouched: every raised face keeps the exact footprint of the
+artwork and all inked surfaces stay coplanar. Use `--no-chamfer` to opt out.
+
+```bash
+stencil-to-stl input.png output.stl --min-feature-width 0.8 --chamfer-height 0.5
+stencil-to-stl input.png output.stl --no-widen --no-chamfer
+```
+
+`--preview` reports the narrowest feature found, how much of the raised area falls
+below the minimum, how many pixels widening added, and how many features merged.
+
 ## Notes For Printmaking
 
-Very thin raised lines may fail to print or break. A practical minimum raised feature width is usually 0.4-0.8 mm, depending on printer, resin/filament, paper, ink, and press pressure.
+The 0.8 mm default is two passes of a 0.4 mm nozzle. One pass is the least an FDM
+printer can lay down at all; two is the least that holds together once the block
+is inked and pressed. A practical minimum runs 0.4-0.8 mm depending on printer,
+resin/filament, paper, ink, and press pressure.
+
+Feature width is measured in every direction, not just horizontally, using a
+morphological opening. Width is reported along the medial ridge of each feature,
+so a tapering tip or the sharp corner of an otherwise healthy shape is not
+mistaken for a thin line. Anything past the edge of the image counts as empty, so
+a feature running off the block edge is measured at its true width.
 
 ## Development
 
@@ -90,15 +135,17 @@ Current architecture:
 - `stencil_to_stl/app/web.py` serves the local browser UI and download endpoint.
 - `stencil_to_stl/app/image_loader.py` loads PNG files into RGBA arrays.
 - `stencil_to_stl/app/mask_processor.py` converts RGBA pixels into a binary print mask and supports horizontal mirroring.
-- `stencil_to_stl/app/mesh_builder.py` turns the mask into a `trimesh.Trimesh` relief block using merged run rectangles.
+- `stencil_to_stl/app/feature_analysis.py` measures feature width and grows anything too narrow to print.
+- `stencil_to_stl/app/height_field.py` turns the mask into per-cell heights, adding the chamfered root.
+- `stencil_to_stl/app/mesh_builder.py` turns a height field into a watertight `trimesh.Trimesh` block.
 - `stencil_to_stl/app/stl_exporter.py` writes the mesh to an STL file.
-- Tests cover image loading, masking, mirroring, basic dimensions, and watertight mesh output.
+- Tests cover image loading, masking, mirroring, feature measurement, widening, chamfer geometry, resampling fidelity, dimensions, and watertight mesh output.
 
 Observed gaps:
 
 - The local browser UI is intentionally simple and still lacks a 3D mesh preview.
 - Preview output is still text-only in the CLI, though the browser UI displays structured metadata after generation.
-- Complex artwork can still produce non-watertight meshes in downstream mesh analysis and needs a dedicated manifold-surface pass.
+- Coplanar cells are not merged into larger rectangles, so meshes stay heavier than they need to be. Doing so introduces T-junctions against the per-cell wall tops and needs its own manifold-safe pass.
 - The local `.venv` may become invalid when the project folder moves because script shebangs can point to an old path.
 
 Recommended architecture direction:
@@ -146,8 +193,7 @@ Recommended mitigations:
 - 3D mesh preview in the UI.
 - Presets for common print sizes such as 4x6, 5x7, and postcard dimensions.
 - Automatic scale calculation from desired physical width or height.
-- Minimum feature width analysis for printmaking reliability.
-- Optional cleanup tools such as despeckle, threshold preview, dilation, erosion, and smoothing.
+- Optional cleanup tools such as despeckle, threshold preview, and smoothing.
 - Export metadata alongside STL, such as settings and source image dimensions.
 - Batch conversion for multiple PNG files.
 - Cross-platform packaging as a small desktop app.

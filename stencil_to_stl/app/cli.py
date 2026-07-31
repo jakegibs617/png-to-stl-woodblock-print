@@ -3,7 +3,13 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from stencil_to_stl.app.config import MAX_PIXEL_COUNT_DEFAULT, MM_PER_INCH, StencilConfig
+from stencil_to_stl.app.config import (
+    CHAMFER_HEIGHT_MM_DEFAULT,
+    MAX_PIXEL_COUNT_DEFAULT,
+    MIN_FEATURE_WIDTH_MM_DEFAULT,
+    MM_PER_INCH,
+    StencilConfig,
+)
 from stencil_to_stl.app.conversion import ConversionMetadata, convert_stencil, preview_conversion
 
 
@@ -39,6 +45,40 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="N",
         help=f"Maximum total pixel count allowed (default: {MAX_PIXEL_COUNT_DEFAULT:,}).",
     )
+    parser.add_argument(
+        "--min-feature-width",
+        type=float,
+        default=MIN_FEATURE_WIDTH_MM_DEFAULT,
+        metavar="MM",
+        help=(
+            "Narrowest raised feature the printer can hold, in millimeters "
+            f"(default: {MIN_FEATURE_WIDTH_MM_DEFAULT:g}, about two passes of a 0.4 mm nozzle)."
+        ),
+    )
+    parser.add_argument(
+        "--chamfer-height",
+        type=float,
+        default=CHAMFER_HEIGHT_MM_DEFAULT,
+        metavar="MM",
+        help=(
+            "Height of the 45 degree flare supporting the root of every raised feature "
+            f"(default: {CHAMFER_HEIGHT_MM_DEFAULT:g}). Valleys keep the remaining relief as ink clearance."
+        ),
+    )
+    parser.add_argument(
+        "--no-chamfer",
+        dest="chamfer_height",
+        action="store_const",
+        const=0.0,
+        help="Leave raised features meeting the base plate at a square corner.",
+    )
+    parser.add_argument(
+        "--no-widen",
+        dest="widen",
+        action="store_false",
+        help="Report features too narrow to print instead of growing them.",
+    )
+    parser.set_defaults(widen=True)
     return parser
 
 
@@ -52,6 +92,15 @@ def print_preview(metadata: ConversionMetadata) -> None:
     print(f"Estimated relief rectangles: {metadata.estimated_relief_rectangles}")
     print(f"Estimated mesh faces: {metadata.estimated_mesh_faces}")
     print(f"Mirrored: {'yes' if metadata.mirrored else 'no'}")
+    print(f"Narrowest feature: {metadata.min_feature_width_mm:.2f} mm")
+    print(f"Below minimum width: {metadata.thin_area_percent:.1f}% of raised area")
+    print(f"Widened pixels: {metadata.widened_pixel_count}")
+    if metadata.merged_feature_count:
+        print(f"Features merged by widening: {metadata.merged_feature_count}")
+    if metadata.chamfer_height_mm:
+        print(f"Root chamfer: {metadata.chamfer_height_mm:g} mm at 45 degrees")
+    else:
+        print("Root chamfer: none")
     for warning in metadata.warnings:
         print(f"Warning: {warning}")
 
@@ -80,6 +129,9 @@ def main(argv: list[str] | None = None) -> int:
         threshold=args.threshold,
         mirror_x=args.mirror_x,
         max_pixel_count=args.max_pixels,
+        min_feature_width_mm=args.min_feature_width,
+        chamfer_height_mm=args.chamfer_height,
+        widen_thin_features=args.widen,
     )
 
     try:
